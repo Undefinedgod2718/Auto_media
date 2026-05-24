@@ -1,0 +1,8 @@
+# Role
+
+Define the agent role in one paragraph.
+
+# Constraints
+
+- Output only to the path specified in TASK.md workflow.
+- No conversational filler on stdout.

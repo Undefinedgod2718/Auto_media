@@ -1,0 +1,45 @@
+version: 1
+
+ui:
+  active: n8n
+  n8n:
+    url: http://localhost:5678
+    workflow_id: auto-media-happy-path
+  hermes:
+    runtime: linux_host
+    entry: cli
+
+orchestration:
+  primary: n8n
+  supervisor: hermes
+
+# Legal engine providers: claude_cli | codex_cli | gemini_cli
+engines:
+  copy:
+    provider: gemini_cli
+    skill_mount: claude_copywriter
+    billing: subscription_cli
+    binary: gemini
+    status: active
+  svg:
+    provider: codex_cli
+    skill_mount: codex_svg_artist
+    billing: subscription_cli
+    binary: codex
+    status: active
+  render:
+    provider: rsvg
+    binary: rsvg-convert
+
+publish:
+  mode: auto
+  plan_a: meta_graph_api
+  plan_b: playwright_dom
+  circuit_breaker:
+    retries: 3
+    signal_file: /data/logs/api_dead.json
+
+features:
+  hitl_telegram: true
+  hermes_gateway: false
+  hermes_cron_supervisor: true

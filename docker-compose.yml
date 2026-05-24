@@ -1,0 +1,43 @@
+services:
+  n8n:
+    build:
+      context: ./docker/n8n
+    image: auto-media-n8n:local
+    restart: unless-stopped
+    user: "1000:1000"
+    ports:
+      - "${N8N_PORT:-5678}:5678"
+    environment:
+      - GENERIC_TIMEZONE=${GENERIC_TIMEZONE:-Asia/Taipei}
+      - TZ=${TZ:-Asia/Taipei}
+      - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
+      - N8N_RUNNERS_ENABLED=true
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
+      - WEBHOOK_URL=${WEBHOOK_URL:-}
+      - LANG=C.UTF-8
+      - LC_ALL=C.UTF-8
+      - AUTO_MEDIA_MOCK=${AUTO_MEDIA_MOCK:-0}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
+      - TELEGRAM_THREAD_ID=${TELEGRAM_THREAD_ID:-}
+      - META_GRAPH_API_VERSION=${META_GRAPH_API_VERSION:-v21.0}
+      - META_PAGE_ID=${META_PAGE_ID:-}
+      - META_PAGE_ACCESS_TOKEN=${META_PAGE_ACCESS_TOKEN:-}
+    volumes:
+      - ./data:/data
+      - ./scripts:/data/scripts:ro
+      - ./config/skills:/data/config/skills:ro
+      - ./config/platform.yaml:/data/config/platform.yaml:ro
+      - ./data/secrets/claude:/data/secrets/claude:ro
+      - ./data/secrets/codex:/data/secrets/codex:ro
+      - n8n_data:/home/node/.n8n
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:5678/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  n8n_data:

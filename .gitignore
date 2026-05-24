@@ -1,0 +1,16 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+uv.lock
+data/runs/*
+!data/runs/.gitkeep
+data/logs/*
+!data/logs/.gitkeep
+data/config/platform.runtime.json
+config/hermes/CONTEXT.md
+config/hermes/mcp.json
+data/secrets/**/*
+!data/secrets/**/.gitkeep
+*.log
+.DS_Store
