@@ -4,6 +4,7 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 
 : "${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN missing}"
+: "${TELEGRAM_WEBHOOK_SECRET:?TELEGRAM_WEBHOOK_SECRET missing (1-256 chars; must match Gateway env)}"
 GATEWAY_PUBLIC_URL="${GATEWAY_PUBLIC_URL:-${GATEWAY_URL:-http://localhost:8787}}"
 N8N_API_URL="${N8N_API_URL:-http://localhost:5678}"
 N8N_API_KEY="${N8N_API_KEY:-}"
@@ -12,7 +13,8 @@ echo "=== enforce_telegram_gateway ==="
 
 curl -fsS "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/deleteWebhook?drop_pending_updates=false" >/dev/null || true
 set_wh="$(curl -fsS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
-  -d "url=${GATEWAY_PUBLIC_URL%/}/telegram")"
+  --data-urlencode "url=${GATEWAY_PUBLIC_URL%/}/telegram" \
+  --data-urlencode "secret_token=${TELEGRAM_WEBHOOK_SECRET}")"
 echo "$set_wh" | python3 -c "import json,sys; d=json.load(sys.stdin); print('  setWebhook ok:', d.get('ok'))"
 
 if [[ -n "$N8N_API_KEY" ]]; then

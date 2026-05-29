@@ -22,6 +22,7 @@ DATA_ROOT = Path(os.environ.get("DATA_ROOT", REPO_ROOT / "data"))
 GATEWAY_DB = Path(os.environ.get("GATEWAY_DB", DATA_ROOT / "hitl" / "gateway.db"))
 GATEWAY_LOG = Path(os.environ.get("GATEWAY_LOG", DATA_ROOT / "logs" / "gateway.jsonl"))
 GATEWAY_SECRET = os.environ.get("GATEWAY_INTERNAL_SECRET", "")
+TELEGRAM_WEBHOOK_SECRET = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 N8N_API_URL = os.environ.get("N8N_API_URL", "http://localhost:5678").rstrip("/")
@@ -161,7 +162,8 @@ def send_preview(run_id: str, stage: str = "v1") -> None:
             {"text": "Approve", "callback_data": f"am:{stage}:approve:{run_id}"},
             {"text": "Revise", "callback_data": f"am:{stage}:revise:{run_id}"},
             {"text": "Reject", "callback_data": f"am:{stage}:reject:{run_id}"},
-        ]]]
+        ]]
+    }
     with png.open("rb") as f:
         import mimetypes
         boundary = "----automediagateway"
@@ -280,7 +282,18 @@ class GatewayHandler(BaseHTTPRequestHandler):
     def _check_secret(self) -> bool:
         if not GATEWAY_SECRET:
             return True
-        return self.headers.get("X-Gateway-Secret", "") == GATEWAY_SECRET
+        import hmac
+        return hmac.compare_digest(self.headers.get("X-Gateway-Secret", ""), GATEWAY_SECRET)
+
+    def _check_telegram_secret(self) -> bool:
+        # Telegram echoes the secret_token set via setWebhook in this header.
+        # Refuse if no secret is configured: an unauthenticated /telegram can
+        # trigger the full production publish pipeline.
+        if not TELEGRAM_WEBHOOK_SECRET:
+            return False
+        import hmac
+        got = self.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+        return hmac.compare_digest(got, TELEGRAM_WEBHOOK_SECRET)
 
     def _json_response(self, code: int, body: dict) -> None:
         raw = json.dumps(body).encode()
@@ -302,6 +315,10 @@ class GatewayHandler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
 
         if path == "/telegram":
+            if not self._check_telegram_secret():
+                log_gateway("telegram_update", "in", ok=False, error="bad telegram secret")
+                self._json_response(403, {"ok": False, "error": "forbidden"})
+                return
             update = payload if "update_id" in payload else payload.get("update", payload)
             uid = int(update.get("update_id", 0))
             if uid and not mark_update(uid):

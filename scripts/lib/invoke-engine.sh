@@ -93,6 +93,32 @@ case "$ENGINE" in
     ;;
 esac
 
+# Recoverable provider failure: log to stderr and signal the failover loop.
+# NEVER json_err (exit) inside a provider — that aborts the whole chain.
+_pfail() {
+  echo "provider-fail: $*" >&2
+  return 1
+}
+
+# Skill files required for the current engine (provider-independent).
+required_skill_files() {
+  if [[ "$ENGINE" == "copywriter" ]]; then
+    echo "SKILL.md BRAND.md TEMPLATE.md"
+  else
+    echo "SKILL.md PALETTE.md RULES.md"
+  fi
+}
+
+# Engine-aware prompt shared by every provider, so each provider produces the
+# right artifact (copy → post.md, svg → art.svg) instead of being aliased away.
+build_prompt() {
+  if [[ "$ENGINE" == "copywriter" ]]; then
+    printf '%s' "Read system instructions from ${SKILL_DIR}/SKILL.md. Apply brand voice from ${SKILL_DIR}/BRAND.md. Read task from ${TASK_FILE}. Format output per ${SKILL_DIR}/TEMPLATE.md. Write final output ONLY to ${OUT_FILE}. Do not print conversational text to stdout."
+  else
+    printf '%s' "Read ${SKILL_DIR}/SKILL.md, ${SKILL_DIR}/PALETTE.md, ${SKILL_DIR}/RULES.md and task ${TASK_FILE}. Write a complete valid W3C SVG document ONLY to ${OUT_FILE}. First line must be <svg or <?xml. viewBox 0 0 1080 1080. No external URLs. No stdout chatter."
+  fi
+}
+
 claude_dir_has_auth() {
   local d="$1"
   [[ -d "$d" ]] || return 1
@@ -143,16 +169,17 @@ claude_prepare_env() {
 }
 
 invoke_claude_cli() {
-  [[ -d "$SKILL_DIR" ]] || json_err "skill dir missing: $SKILL_DIR"
-  for f in SKILL.md BRAND.md TEMPLATE.md; do
-    [[ -f "${SKILL_DIR}/${f}" ]] || json_err "missing ${SKILL_DIR}/${f}"
+  [[ -d "$SKILL_DIR" ]] || { _pfail "claude: skill dir missing: $SKILL_DIR"; return 1; }
+  local f
+  for f in $(required_skill_files); do
+    [[ -f "${SKILL_DIR}/${f}" ]] || { _pfail "claude: missing ${SKILL_DIR}/${f}"; return 1; }
   done
-  command -v "$BINARY" >/dev/null 2>&1 || json_err "binary not found: $BINARY"
-  claude_has_auth || json_err "claude_cli not authenticated: $(claude_auth_hint)"
+  command -v "$BINARY" >/dev/null 2>&1 || { _pfail "claude: binary not found: $BINARY"; return 1; }
+  claude_has_auth || { _pfail "claude_cli not authenticated: $(claude_auth_hint)"; return 1; }
   claude_prepare_env
 
   local prompt
-  prompt="Read system instructions from ${SKILL_DIR}/SKILL.md. Apply brand voice from ${SKILL_DIR}/BRAND.md. Read task from ${TASK_FILE}. Format output per ${SKILL_DIR}/TEMPLATE.md. Write final output ONLY to ${OUT_FILE}. Do not print conversational text to stdout."
+  prompt="$(build_prompt)"
 
   local _claude_err
   _claude_err="$(mktemp)"
@@ -160,28 +187,33 @@ invoke_claude_cli() {
     local _tail
     _tail="$(tail -3 "$_claude_err" 2>/dev/null | tr '\n' ' ' | sed 's/  */ /g')"
     rm -f "$_claude_err"
-    json_err "claude CLI failed${_tail:+: ${_tail}}"
+    _pfail "claude CLI failed${_tail:+: ${_tail}}"
+    return 1
   fi
   rm -f "$_claude_err"
-  [[ -f "$OUT_FILE" ]] || json_err "output not created: $OUT_FILE"
+  [[ -f "$OUT_FILE" ]] || { _pfail "claude: output not created: $OUT_FILE"; return 1; }
+  if [[ "$ENGINE" == "svg_artist" ]]; then
+    normalize_svg_output "$OUT_FILE"
+    svg_is_valid "$OUT_FILE" || { _pfail "claude: invalid svg"; return 1; }
+  fi
 }
 
 invoke_codex_cli() {
-  [[ -d "$SKILL_DIR" ]] || json_err "skill dir missing: $SKILL_DIR"
-  for f in SKILL.md PALETTE.md RULES.md; do
-    [[ -f "${SKILL_DIR}/${f}" ]] || json_err "missing ${SKILL_DIR}/${f}"
+  [[ -d "$SKILL_DIR" ]] || { _pfail "codex: skill dir missing: $SKILL_DIR"; return 1; }
+  local f
+  for f in $(required_skill_files); do
+    [[ -f "${SKILL_DIR}/${f}" ]] || { _pfail "codex: missing ${SKILL_DIR}/${f}"; return 1; }
   done
-  local _codex_ok=0
-  if command -v "$BINARY" >/dev/null 2>&1; then
-    local prompt
-    prompt="Read ${SKILL_DIR}/SKILL.md, ${SKILL_DIR}/PALETTE.md, ${SKILL_DIR}/RULES.md and task ${TASK_FILE}. Write valid W3C SVG ONLY to ${OUT_FILE}. viewBox 0 0 1080 1080. No external URLs. No stdout chatter."
-    "$BINARY" -y "$prompt" </dev/null >/dev/null 2>&1 && _codex_ok=1 || _codex_ok=0
+  command -v "$BINARY" >/dev/null 2>&1 || { _pfail "codex: binary not found: $BINARY"; return 1; }
+
+  local prompt
+  prompt="$(build_prompt)"
+  "$BINARY" -y "$prompt" </dev/null >/dev/null 2>&1 || { _pfail "codex CLI failed"; return 1; }
+  [[ -f "$OUT_FILE" ]] || { _pfail "codex: output not created: $OUT_FILE"; return 1; }
+  if [[ "$ENGINE" == "svg_artist" ]]; then
+    normalize_svg_output "$OUT_FILE"
+    svg_is_valid "$OUT_FILE" || { _pfail "codex: invalid svg"; return 1; }
   fi
-  if [[ "$_codex_ok" == "0" || ! -f "$OUT_FILE" ]]; then
-    return 1
-  fi
-  normalize_svg_output "$OUT_FILE"
-  svg_is_valid "$OUT_FILE" || return 1
 }
 
 normalize_svg_output() {
@@ -330,22 +362,22 @@ gemini_prepare_home() {
 }
 
 invoke_gemini_cli() {
-  [[ -d "$SKILL_DIR" ]] || json_err "skill dir missing: $SKILL_DIR"
-  command -v "$BINARY" >/dev/null 2>&1 || json_err "binary not found: $BINARY"
-  gemini_has_auth || json_err "gemini_cli not authenticated: $(gemini_auth_hint)"
+  [[ -d "$SKILL_DIR" ]] || { _pfail "gemini: skill dir missing: $SKILL_DIR"; return 1; }
+  command -v "$BINARY" >/dev/null 2>&1 || { _pfail "gemini: binary not found: $BINARY"; return 1; }
+  gemini_has_auth || { _pfail "gemini_cli not authenticated: $(gemini_auth_hint)"; return 1; }
   gemini_prepare_home
   # n8n /data/runs/* is not an interactive trusted folder — required for headless
   export GEMINI_CLI_TRUST_WORKSPACE="${GEMINI_CLI_TRUST_WORKSPACE:-true}"
 
-  local prompt
+  local prompt f
   if [[ "$ENGINE" == "copywriter" ]]; then
-    for f in SKILL.md BRAND.md TEMPLATE.md; do
-      [[ -f "${SKILL_DIR}/${f}" ]] || json_err "missing ${SKILL_DIR}/${f}"
+    for f in $(required_skill_files); do
+      [[ -f "${SKILL_DIR}/${f}" ]] || { _pfail "gemini: missing ${SKILL_DIR}/${f}"; return 1; }
     done
     prompt="Read system instructions from ${SKILL_DIR}/SKILL.md. Apply brand voice from ${SKILL_DIR}/BRAND.md. Read task from ${TASK_FILE}. Format output per ${SKILL_DIR}/TEMPLATE.md. Write final output ONLY to ${OUT_FILE}. Do not print conversational text to stdout."
   else
-    for f in SKILL.md PALETTE.md RULES.md; do
-      [[ -f "${SKILL_DIR}/${f}" ]] || json_err "missing ${SKILL_DIR}/${f}"
+    for f in $(required_skill_files); do
+      [[ -f "${SKILL_DIR}/${f}" ]] || { _pfail "gemini: missing ${SKILL_DIR}/${f}"; return 1; }
     done
     prompt="Read ${SKILL_DIR}/SKILL.md, ${SKILL_DIR}/PALETTE.md, ${SKILL_DIR}/RULES.md and task ${TASK_FILE}. Write a complete valid W3C SVG document to ${OUT_FILE} using your file tool. ${OUT_FILE} must start with <svg or <?xml on line 1. viewBox 0 0 1080 1080. No external URLs. Do not write explanatory prose into ${OUT_FILE} or stdout."
   fi
@@ -357,7 +389,8 @@ invoke_gemini_cli() {
       local _tail
       _tail="$(tail -3 "$_gemini_err" 2>/dev/null | tr '\n' ' ' | sed 's/  */ /g')"
       rm -f "$_gemini_err"
-      json_err "gemini CLI failed${_tail:+: ${_tail}}"
+      _pfail "gemini CLI failed${_tail:+: ${_tail}}"
+      return 1
     fi
     if ! svg_is_valid "$OUT_FILE"; then
       _gemini_stdout="$(mktemp)"
@@ -373,16 +406,17 @@ invoke_gemini_cli() {
       fi
     fi
     rm -f "$_gemini_err"
-    [[ -f "$OUT_FILE" ]] || json_err "output not created: $OUT_FILE"
-    svg_is_valid "$OUT_FILE" || json_err "invalid SVG XML"
-    return
+    [[ -f "$OUT_FILE" ]] || { _pfail "gemini: output not created: $OUT_FILE"; return 1; }
+    svg_is_valid "$OUT_FILE" || { _pfail "gemini: invalid SVG XML"; return 1; }
+    return 0
   fi
 
   if ! "$BINARY" -p "$prompt" -y --skip-trust </dev/null >"$OUT_FILE" 2>"$_gemini_err"; then
     local _tail
     _tail="$(tail -3 "$_gemini_err" 2>/dev/null | tr '\n' ' ' | sed 's/  */ /g')"
     rm -f "$_gemini_err"
-    json_err "gemini CLI failed${_tail:+: ${_tail}}"
+    _pfail "gemini CLI failed${_tail:+: ${_tail}}"
+    return 1
   fi
   rm -f "$_gemini_err"
   if [[ ! -s "$OUT_FILE" ]]; then
@@ -391,11 +425,12 @@ invoke_gemini_cli() {
       local _tail
       _tail="$(tail -3 "$_gemini_err" 2>/dev/null | tr '\n' ' ' | sed 's/  */ /g')"
       rm -f "$_gemini_err"
-      json_err "gemini CLI failed (no output file)${_tail:+: ${_tail}}"
+      _pfail "gemini CLI failed (no output file)${_tail:+: ${_tail}}"
+      return 1
     fi
     rm -f "$_gemini_err"
   fi
-  [[ -f "$OUT_FILE" ]] || json_err "output not created: $OUT_FILE"
+  [[ -f "$OUT_FILE" ]] || { _pfail "gemini: output not created: $OUT_FILE"; return 1; }
 }
 
 FAILOVER_LOG="${DATA_ROOT}/logs/engine_failover.jsonl"
@@ -454,10 +489,7 @@ invoke_provider() {
       case "$p" in
         claude_cli) invoke_claude_cli ;;
         gemini_cli) invoke_gemini_cli ;;
-        codex_cli)
-          OUT_FILE="${RUN_DIR}/post.md"
-          invoke_gemini_cli
-          ;;
+        codex_cli) invoke_codex_cli ;;
         *) return 1 ;;
       esac
       ;;
@@ -466,9 +498,7 @@ invoke_provider() {
       case "$p" in
         codex_cli) invoke_codex_cli ;;
         gemini_cli) invoke_gemini_cli ;;
-        claude_cli)
-          invoke_gemini_cli
-          ;;
+        claude_cli) invoke_claude_cli ;;
         *) return 1 ;;
       esac
       ;;
