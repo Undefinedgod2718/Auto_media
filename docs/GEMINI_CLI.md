@@ -34,6 +34,13 @@ exit
 
 或掛載宿主/秘密目錄至 `~/.gemini`（勿把 token 寫進映像 layer）。
 
+**n8n 必做**：OAuth 登入在 Dev Container 的 `~/.gemini`，容器讀的是 `data/secrets/gemini`。登入後執行：
+
+```bash
+./scripts/sync_gemini_oauth.sh
+docker compose restart n8n
+```
+
 ## 切換引擎
 
 ```bash
@@ -49,7 +56,8 @@ exit
 
 [`scripts/lib/invoke-engine.sh`](../scripts/lib/invoke-engine.sh) 使用 headless 旗標：
 
-- `gemini -p "<prompt>" -y --approval-mode auto_edit`（要求寫入 run 目錄內 `post.md` / `art.svg`）
+- `gemini -p "<prompt>" -y --skip-trust`（headless 必加 `--skip-trust` 或 `GEMINI_CLI_TRUST_WORKSPACE=true`）
+- **不可**與 `--approval-mode` 同時使用 `-y`
 - 若未落檔，fallback：stdout 重導至輸出檔
 
 Skill 目錄沿用 `claude_copywriter`（文案）與 `codex_svg_artist`（SVG），無需另建 gemini skill 樹。

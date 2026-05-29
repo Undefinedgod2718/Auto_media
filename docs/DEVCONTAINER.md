@@ -15,9 +15,17 @@
 1. 安裝 [Docker Desktop](https://docs.docker.com/get-docker/) 與 Cursor/VS Code Dev Containers 擴充。
 2. 命令面板：**Dev Containers: Reopen in Container**。
 3. 等待 `post-create.sh`（`uv sync`、`amctl apply`）。
-4. 終端執行 `claude` 完成 Claude Code 登入（ChatGPT OAuth）。
-5. 執行 `codex` 完成 Codex CLI 登入（ChatGPT OAuth，SVG 引擎用）。
+4. 終端執行 `claude` 完成 Claude Code 登入（`/login`）。見 **[CLAUDE_CLI.md](CLAUDE_CLI.md)**。
+5. 執行 `codex` 完成 Codex CLI 登入（SVG 引擎用）。
 6. （可選）執行 `gemini` 完成 Gemini CLI 登入，見 **[GEMINI_CLI.md](GEMINI_CLI.md)**。
+
+登入後同步至 n8n 可讀目錄：
+
+```bash
+./scripts/sync_claude_oauth.sh   # Claude → data/secrets/claude
+./scripts/sync_gemini_oauth.sh   # Gemini → data/secrets/gemini
+docker compose restart n8n
+```
 
 ## 持久化 `~/.claude`、`~/.codex` 與 `~/.gemini`
 

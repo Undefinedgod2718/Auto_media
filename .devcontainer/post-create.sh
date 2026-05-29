@@ -59,6 +59,15 @@ install_gemini_fallback() {
 
 install_gemini_fallback || true
 
+mkdir -p "${HOME}/.gemini" "${HOME}/.claude" "${HOME}/.codex" \
+  "${REPO_ROOT}/data/secrets/gemini" "${REPO_ROOT}/data/secrets/claude" "${REPO_ROOT}/data/secrets/codex"
+for _cfg in "${HOME}/.gemini" "${HOME}/.claude" "${HOME}/.codex"; do
+  if [[ -d "$_cfg" ]] && [[ ! -w "$_cfg" ]]; then
+    sudo chown -R "$(id -u):$(id -g)" "$_cfg" 2>/dev/null \
+      || echo "warn: fix $_cfg permissions: sudo chown -R $(whoami) $_cfg" >&2
+  fi
+done
+
 if [[ -x scripts/amctl.sh ]]; then
   if command -v claude >/dev/null 2>&1 \
     && command -v codex >/dev/null 2>&1 \

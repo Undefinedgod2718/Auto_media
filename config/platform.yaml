@@ -16,17 +16,23 @@ orchestration:
 # Legal engine providers: claude_cli | codex_cli | gemini_cli
 engines:
   copy:
-    provider: gemini_cli
+    provider: claude_cli
     skill_mount: claude_copywriter
     billing: subscription_cli
-    binary: gemini
+    binary: claude
     status: active
+    fallback:
+      - gemini_cli
+      - codex_cli
   svg:
     provider: codex_cli
     skill_mount: codex_svg_artist
     billing: subscription_cli
     binary: codex
     status: active
+    fallback:
+      - gemini_cli
+      - claude_cli
   render:
     provider: rsvg
     binary: rsvg-convert
@@ -41,5 +47,5 @@ publish:
 
 features:
   hitl_telegram: true
-  hermes_gateway: false
+  hermes_gateway: true
   hermes_cron_supervisor: true

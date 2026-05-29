@@ -1,0 +1,431 @@
+{
+  "name": "auto-media-hitl-forwarder",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "auto-media-telegram-in",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "webhook-telegram-in",
+      "name": "Webhook Telegram IN",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -220,
+        120
+      ],
+      "webhookId": "auto-media-telegram-in"
+    },
+    {
+      "parameters": {
+        "updates": [
+          "callback_query",
+          "message"
+        ]
+      },
+      "id": "telegram-trigger",
+      "name": "Telegram Trigger",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ],
+      "disabled": true,
+      "notes": "Enable when WEBHOOK_URL is HTTPS (production). Local dev: use Webhook Telegram IN + scripts/telegram_poll_forwarder.sh",
+      "credentials": {
+        "telegramApi": {
+          "id": "CONFIGURE_ME",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const raw = $input.item.json;\nconst u = raw.callback_query || raw.message ? raw : (raw.body || raw);\nif (u.callback_query) {\n  const data = String(u.callback_query.data || '');\n  const m = data.match(/^am:(v\\d+):(approve|reject|revise):([A-Za-z0-9._-]+)$/);\n  if (!m) return { json: { kind: 'ignore', reason: 'invalid callback_data', data } };\n  return { json: { kind: 'callback', stage: m[1], callback: m[2], run_id: m[3], callback_query_id: u.callback_query.id } };\n}\nif (u.message?.reply_to_message) {\n  return { json: { kind: 'feedback', reply_to_message_id: u.message.reply_to_message.message_id, feedback_text: u.message.text || '' } };\n}\nreturn { json: { kind: 'ignore', reason: 'not callback_query or force-reply message' } };"
+      },
+      "id": "parse-telegram",
+      "name": "Parse Telegram update",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.kind }}",
+                    "rightValue": "callback",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "callback"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.kind }}",
+                    "rightValue": "feedback",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "feedback"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "id": "route-kind",
+      "name": "Route update kind",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        480,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.stage }}",
+                    "rightValue": "v2",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "v2"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "id": "route-callback-stage",
+      "name": "Route callback stage",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        720,
+        -120
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.resume_url }}",
+        "options": {}
+      },
+      "id": "resume-hitl-v1",
+      "name": "Resume Wait hitl-v1",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        -200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.resume_url }}",
+        "options": {}
+      },
+      "id": "resume-hitl-v2",
+      "name": "Resume Wait hitl-v2",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        -40
+      ]
+    },
+    {
+      "parameters": {
+        "command": "=`/bin/bash /data/scripts/read_hitl_reply_map.sh --message-id ${String($json.reply_to_message_id || '')}`"
+      },
+      "id": "read-reply-map",
+      "name": "Read HITL reply map",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        720,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const mapRaw = $input.item.json.stdout || '{}';\nlet map;\ntry { map = JSON.parse(mapRaw); } catch (e) { throw new Error('invalid reply map JSON: ' + mapRaw); }\nconst fb = $('Parse Telegram update').item.json;\nreturn { json: { run_id: map.run_id, stage: map.stage || 'v1', decision: map.decision || 'revise', feedback_text: fb.feedback_text || '' } };"
+      },
+      "id": "merge-feedback",
+      "name": "Merge feedback payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.WEBHOOK_URL || 'http://localhost:5678').replace(/\\/$/, '') + '/webhook-wait/auto-media-feedback-v1' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ run_id: $json.run_id, feedback_text: $json.feedback_text, decision: $json.decision, stage: $json.stage }) }}",
+        "options": {}
+      },
+      "id": "resume-feedback-v1",
+      "name": "Resume Wait feedback-v1",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1200,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/answerCallbackQuery",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"callback_query_id\": \"{{ $('Parse Telegram update').item.json.callback_query_id }}\",\n  \"text\": \"{{ $('Parse Telegram update').item.json.callback === 'approve' ? '✅ 已收到核准' : $('Parse Telegram update').item.json.callback === 'revise' ? '🛠 已收到修正指示，請回覆建議' : '❌ 已收到拒絕，請回覆修正意見' }}\",\n  \"show_alert\": false\n}",
+        "options": {}
+      },
+      "id": "answer-callback",
+      "name": "Answer callback query",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1200,
+        -120
+      ]
+    },
+    {
+      "parameters": {
+        "command": "=/bin/bash /data/scripts/read_hitl_resume_map.sh --run-id \"{{ $('Parse Telegram update').item.json.run_id }}\" --stage \"{{ $('Parse Telegram update').item.json.stage }}\""
+      },
+      "id": "read-resume-aefa05997726",
+      "name": "Read wait resume map",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        720,
+        -280
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const raw = $input.item.json.stdout || '{}';\nlet map;\ntry { map = JSON.parse(raw); } catch (e) { throw new Error('invalid resume map: ' + raw); }\nconst cb = $('Parse Telegram update').item.json;\nif (!map.resume_url) throw new Error('resume_url missing');\nlet url = String(map.resume_url);\nurl = url.replace(/\\/(auto-media-[^/?&]+)$/, '');\nurl = url.replace(/(signature=[^&]+)\\/auto-media-[^&]+/, '$1');\nconst sep = url.indexOf('?') >= 0 ? '&' : '?';\nconst resume_url = url + sep + 'callback=' + encodeURIComponent(cb.callback) + '&run_id=' + encodeURIComponent(cb.run_id) + '&stage=' + encodeURIComponent(cb.stage);\nreturn { json: { ...cb, resume_url } };"
+      },
+      "id": "parse-resume-5896e0408893",
+      "name": "Parse wait resume map",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        840,
+        -280
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook Telegram IN": {
+      "main": [
+        [
+          {
+            "node": "Parse Telegram update",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram Trigger": {
+      "main": [
+        [
+          {
+            "node": "Parse Telegram update",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Telegram update": {
+      "main": [
+        [
+          {
+            "node": "Route update kind",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route update kind": {
+      "main": [
+        [
+          {
+            "node": "Route callback stage",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Read HITL reply map",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Route callback stage": {
+      "main": [
+        [
+          {
+            "node": "Read wait resume map",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Read wait resume map",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resume Wait hitl-v1": {
+      "main": [
+        [
+          {
+            "node": "Answer callback query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resume Wait hitl-v2": {
+      "main": [
+        [
+          {
+            "node": "Answer callback query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read HITL reply map": {
+      "main": [
+        [
+          {
+            "node": "Merge feedback payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge feedback payload": {
+      "main": [
+        [
+          {
+            "node": "Resume Wait feedback-v1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read wait resume map": {
+      "main": [
+        [
+          {
+            "node": "Parse wait resume map",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse wait resume map": {
+      "main": [
+        [
+          {
+            "node": "Resume Wait hitl-v1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false,
+  "versionId": "hitl-forwarder-v1",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "id": "auto-media-hitl-forwarder"
+}

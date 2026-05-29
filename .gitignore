@@ -5,6 +5,8 @@ __pycache__/
 uv.lock
 data/runs/*
 !data/runs/.gitkeep
+data/hitl/*
+!data/hitl/.gitkeep
 data/logs/*
 !data/logs/.gitkeep
 data/config/platform.runtime.json

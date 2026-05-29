@@ -8,30 +8,56 @@ services:
     ports:
       - "${N8N_PORT:-5678}:5678"
     environment:
-      - GENERIC_TIMEZONE=${GENERIC_TIMEZONE:-Asia/Taipei}
-      - TZ=${TZ:-Asia/Taipei}
-      - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
-      - N8N_RUNNERS_ENABLED=true
-      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
-      - WEBHOOK_URL=${WEBHOOK_URL:-}
-      - LANG=C.UTF-8
-      - LC_ALL=C.UTF-8
-      - AUTO_MEDIA_MOCK=${AUTO_MEDIA_MOCK:-0}
-      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
-      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
-      - TELEGRAM_THREAD_ID=${TELEGRAM_THREAD_ID:-}
-      - META_GRAPH_API_VERSION=${META_GRAPH_API_VERSION:-v21.0}
-      - META_PAGE_ID=${META_PAGE_ID:-}
-      - META_PAGE_ACCESS_TOKEN=${META_PAGE_ACCESS_TOKEN:-}
+      GENERIC_TIMEZONE: ${GENERIC_TIMEZONE:-Asia/Taipei}
+      TZ: ${TZ:-Asia/Taipei}
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true"
+      N8N_RUNNERS_ENABLED: "true"
+      # Quote value: compose treats $env inside N8N_BLOCK_ENV_* as variable interpolation.
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+      # Execute Command / Read-Write Files are security-sensitive; n8n disables them by default.
+      NODES_EXCLUDE: "[]"
+      N8N_ENABLE_EXECUTE_COMMAND: "true"
+      FILESYSTEM_ALLOWED_PATHS: /data
+      # Read/Write Files from Disk sandbox (n8n v2+). Workflow reads /data/runs/*.
+      N8N_RESTRICT_FILE_ACCESS_TO: /data
+      NODE_FUNCTION_ALLOW_BUILTIN: "*"
+      NODE_FUNCTION_ALLOW_EXTERNAL: "*"
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+      WEBHOOK_URL: ${WEBHOOK_URL:-}
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+      AUTO_MEDIA_MOCK: ${AUTO_MEDIA_MOCK:-0}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      TELEGRAM_THREAD_ID: ${TELEGRAM_THREAD_ID:-}
+      META_GRAPH_API_VERSION: ${META_GRAPH_API_VERSION:-v21.0}
+      META_PAGE_ID: ${META_PAGE_ID:-}
+      META_PAGE_ACCESS_TOKEN: ${META_PAGE_ACCESS_TOKEN:-}
+      THREADS_USER_ID: ${THREADS_USER_ID:-}
+      THREADS_ACCESS_TOKEN: ${THREADS_ACCESS_TOKEN:-}
+      GATEWAY_URL: ${GATEWAY_URL:-http://host.docker.internal:8787}
+      GATEWAY_INTERNAL_SECRET: ${GATEWAY_INTERNAL_SECRET:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_CLI_TRUST_WORKSPACE: ${GEMINI_CLI_TRUST_WORKSPACE:-true}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+      CLAUDE_CONFIG_DIR: /data/secrets/claude
     volumes:
       - ./data:/data
+      # Explicit subdir binds for docker-host.sock (Dev Container) where root ./data may not sync.
+      - ./data/runs:/data/runs
+      - ./data/logs:/data/logs
+      - ./data/hitl:/data/hitl
+      - ./data/config:/data/config
       - ./scripts:/data/scripts:ro
       - ./config/skills:/data/config/skills:ro
       - ./config/platform.yaml:/data/config/platform.yaml:ro
-      - ./data/secrets/claude:/data/secrets/claude:ro
-      - ./data/secrets/codex:/data/secrets/codex:ro
+      - ./data/secrets/claude:/data/secrets/claude
+      - ./data/secrets/codex:/data/secrets/codex
+      - ./data/secrets/gemini:/home/node/.gemini
       - n8n_data:/home/node/.n8n
-    mem_limit: 512m
+    # Copywriter + SVG engines run in parallel; 768m reduces OOM risk under load.
+    mem_limit: 768m
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:5678/healthz"]
       interval: 30s

@@ -57,6 +57,17 @@ fi
 
 if command -v claude >/dev/null 2>&1; then
   check pass claude-code "$(claude --version 2>&1 | head -1 || echo ok)"
+  if [[ -n "${ANTHROPIC_API_KEY:-}" || -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then
+    check pass claude-auth "ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN set"
+  elif claude auth status 2>/dev/null | grep -q '"loggedIn": true'; then
+    check pass claude-auth "claude auth status logged in"
+  elif [[ -f "${REPO_ROOT}/data/secrets/claude/.credentials.json" ]]; then
+    check pass claude-auth "data/secrets/claude/.credentials.json present"
+  elif [[ -f "${HOME}/.claude/.credentials.json" ]]; then
+    check warn claude-auth "~/.claude has credentials but not synced — run: ./scripts/sync_claude_oauth.sh"
+  else
+    check fail claude-auth "not logged in — run: claude then /login, or set ANTHROPIC_API_KEY"
+  fi
 elif [[ -d "${REPO_ROOT}/data/secrets/claude" ]]; then
   check warn claude-code "not in PATH; mount secrets and use container image"
 else
@@ -71,6 +82,17 @@ fi
 
 if command -v gemini >/dev/null 2>&1; then
   check pass gemini "$(gemini --version 2>&1 | head -1 || echo ok)"
+  if [[ -n "${GEMINI_API_KEY:-}" ]]; then
+    check pass gemini-auth "GEMINI_API_KEY set"
+  elif [[ -f "${REPO_ROOT}/data/secrets/gemini/oauth_creds.json" ]]; then
+    check pass gemini-auth "data/secrets/gemini OAuth cache present (n8n ready)"
+  elif [[ -f "${HOME}/.gemini/oauth_creds.json" || -f "${HOME}/.gemini/google_accounts.json" ]]; then
+    check warn gemini-auth "~/.gemini OK but not synced — run: ./scripts/sync_gemini_oauth.sh"
+  elif [[ -f "${HOME}/.gemini/.env" ]] && grep -qE '^GEMINI_API_KEY=' "${HOME}/.gemini/.env" 2>/dev/null; then
+    check pass gemini-auth "~/.gemini/.env has GEMINI_API_KEY"
+  else
+    check fail gemini-auth "no GEMINI_API_KEY and no ~/.gemini login — copy engine will fail in n8n"
+  fi
 else
   check warn gemini "not in PATH — optional; amctl engine copy|svg gemini_cli needs gemini"
 fi
