@@ -26,6 +26,29 @@ CLASSIFY_RESUME_JS = r"""const cb = $json.body?.callback ?? $json.query?.callbac
 const has = ['approve','revise','reject'].includes(String(cb || ''));
 return { json: { ...$json, hitl_resume_kind: has ? 'human' : 'ttl_expired', callback: cb || '' } };"""
 
+# In Model A the Gateway (not n8n) runs Hermes prereview and writes
+# hermes_assessment.json during the wait. The audit nodes used to read
+# $('Parse Hermes assessment'); that node no longer runs, so load the file here.
+LOAD_ASSESSMENT_JS = r"""const fs = require('fs');
+const runId = $('Set run context').item.json.run_id;
+let hermes = {};
+try { hermes = JSON.parse(fs.readFileSync('/data/runs/' + runId + '/hermes_assessment.json', 'utf8')); } catch (e) { hermes = {}; }
+return { json: { ...$json, hermes } };"""
+
+# Old n8n preview + prereview nodes — superseded by the Gateway. Their only data
+# consumers (Read post.md/png, the assessment) are preserved by F-rewire below.
+PREVIEW_PREREVIEW_NODES = [
+    "Merge review inputs",
+    "Hermes prereview",
+    "Parse Hermes assessment",
+    "Switch assessment schema",
+    "Audit hermes prereview",
+    "Audit schema error",
+    "Set review caption",
+    "Attach preview binary",
+    "Telegram HITL preview",
+]
+
 PARSE_RESUME_MAP_JS = r"""const raw = $input.item.json.stdout || '{}';
 let map;
 try { map = JSON.parse(raw); } catch (e) { throw new Error('invalid resume map: ' + raw); }
@@ -110,13 +133,29 @@ def patch_happy(data: dict) -> None:
             "typeVersion": 1,
             "position": [2640, 200],
         })
+    if "Load hermes assessment" not in nodes:
+        data["nodes"].append({
+            "parameters": {"mode": "runOnceForEachItem", "jsCode": LOAD_ASSESSMENT_JS},
+            "id": f"load-assess-{nid()}",
+            "name": "Load hermes assessment",
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2,
+            "position": [2360, 0],
+        })
 
     nodes = {n["name"]: n for n in data["nodes"]}
 
-    # Rewire: Render PNG -> Save -> Schedule -> Wait; Wait -> Check resume type
+    # F-rewire: Render PNG fans out to Save (HITL) AND the two file reads, so
+    # Read post.md/png still execute — Meta/Threads publish read
+    # $('Read post.md').item.json.data. Reads are leaves (output consumed later).
     conn["Render PNG"] = {"main": [[
-        {"node": "Save wait resume URL (stage1)", "type": "main", "index": 0}
+        {"node": "Save wait resume URL (stage1)", "type": "main", "index": 0},
+        {"node": "Read post.png", "type": "main", "index": 0},
+        {"node": "Read post.md", "type": "main", "index": 0},
     ]]}
+    conn.pop("Read post.png", None)
+    conn.pop("Read post.md", None)
+
     conn["Save wait resume URL (stage1)"] = {"main": [[
         {"node": "Schedule Gateway prereview (stage1)", "type": "main", "index": 0}
     ]]}
@@ -127,8 +166,11 @@ def patch_happy(data: dict) -> None:
         {"node": "Check resume type (stage1)", "type": "main", "index": 0}
     ]]}
 
-    # Check resume type -> Switch callback OR ttl reject path
+    # Check resume type -> Load hermes assessment -> Switch callback
     conn["Check resume type (stage1)"] = {"main": [[
+        {"node": "Load hermes assessment", "type": "main", "index": 0}
+    ]]}
+    conn["Load hermes assessment"] = {"main": [[
         {"node": "Switch callback (stage1)", "type": "main", "index": 0}
     ]]}
 
@@ -137,6 +179,24 @@ def patch_happy(data: dict) -> None:
     if len(sc) >= 3:
         sc[2] = [{"node": "Notify run rejected (stage1)", "type": "main", "index": 0}]
     conn["Switch callback (stage1)"] = {"main": sc}
+
+    # Repoint audit nodes from the (now-removed) n8n prereview node to the file load.
+    for nm in ("Audit human decision v1", "Audit human decision v2"):
+        if nm in nodes:
+            cmd = nodes[nm]["parameters"].get("command", "")
+            cmd = cmd.replace(
+                "$('Parse Hermes assessment').item.json",
+                "$('Load hermes assessment').item.json.hermes",
+            )
+            nodes[nm]["parameters"]["command"] = cmd
+
+    # Remove orphaned old preview/prereview nodes + any connections to/from them.
+    data["nodes"] = [n for n in data["nodes"] if n["name"] not in PREVIEW_PREREVIEW_NODES]
+    for nm in PREVIEW_PREREVIEW_NODES:
+        conn.pop(nm, None)
+    for _src, v in list(conn.items()):
+        for grp in v.get("main", []):
+            grp[:] = [c for c in grp if c.get("node") not in PREVIEW_PREREVIEW_NODES]
 
 
 def patch_forwarder(data: dict) -> None:

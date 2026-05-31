@@ -716,194 +716,7 @@
     },
     {
       "parameters": {
-        "mode": "combine",
-        "combineBy": "combineByPosition",
-        "options": {}
-      },
-      "id": "merge-review-inputs",
-      "name": "Merge review inputs",
-      "type": "n8n-nodes-base.merge",
-      "typeVersion": 3.2,
-      "position": [
-        1760,
-        -60
-      ]
-    },
-    {
-      "parameters": {
-        "command": "=/bin/bash /data/scripts/hermes_prereview.sh --run-id \"{{ $('Set run context').item.json.run_id }}\""
-      },
-      "id": "hermes-prereview",
-      "name": "Hermes prereview",
-      "type": "n8n-nodes-base.executeCommand",
-      "typeVersion": 1,
-      "position": [
-        1980,
-        -60
-      ]
-    },
-    {
-      "parameters": {
-        "mode": "runOnceForEachItem",
-        "jsCode": "const raw=$json.stdout||'{}'; let a; try { a=JSON.parse(raw);} catch(e){throw new Error('invalid hermes assessment:'+raw);} const req=['run_id','review_round','verdict_hint','skill_compliance','reasons','suggestions','risk_level','rerun_scope_hint']; const missing=req.filter(k=>a[k]===undefined); return { json: { ...a, schema_valid: missing.length===0, missing_fields: missing } };"
-      },
-      "id": "parse-hermes-assessment",
-      "name": "Parse Hermes assessment",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        2200,
-        -60
-      ]
-    },
-    {
-      "parameters": {
-        "rules": {
-          "values": [
-            {
-              "conditions": {
-                "options": {
-                  "caseSensitive": true,
-                  "leftValue": "",
-                  "typeValidation": "strict"
-                },
-                "conditions": [
-                  {
-                    "leftValue": "={{ $json.schema_valid }}",
-                    "operator": {
-                      "type": "boolean",
-                      "operation": "true",
-                      "singleValue": true
-                    }
-                  }
-                ],
-                "combinator": "and"
-              },
-              "renameOutput": true,
-              "outputKey": "valid"
-            }
-          ]
-        },
-        "options": {
-          "fallbackOutput": "extra"
-        }
-      },
-      "id": "switch-assessment-schema",
-      "name": "Switch assessment schema",
-      "type": "n8n-nodes-base.switch",
-      "typeVersion": 3.2,
-      "position": [
-        2420,
-        -60
-      ]
-    },
-    {
-      "parameters": {
-        "command": "=/bin/bash /data/scripts/append_review_audit.sh --run-id \"{{ $json.run_id }}\" --actor hermes --decision \"{{ $json.verdict_hint }}\" --review-round \"{{ $json.review_round }}\" --risk-level \"{{ $json.risk_level }}\" --reasons-json \"{{ JSON.stringify($json.reasons || []) }}\" --suggestions-json \"{{ JSON.stringify($json.suggestions || []) }}\" --rerun-scope \"{{ $json.rerun_scope_hint }}\""
-      },
-      "id": "audit-hermes-prereview",
-      "name": "Audit hermes prereview",
-      "type": "n8n-nodes-base.executeCommand",
-      "typeVersion": 1,
-      "position": [
-        2640,
-        -60
-      ]
-    },
-    {
-      "parameters": {
-        "mode": "manual",
-        "duplicateItem": false,
-        "assignments": {
-          "assignments": [
-            {
-              "id": "review_caption",
-              "name": "review_caption",
-              "value": "={{ Buffer.from($('Read post.md').item.binary.data.data, 'base64').toString('utf8') + '\\n\\n[Hermes初審] risk=' + ($('Parse Hermes assessment').item.json.risk_level || 'low') + ' | hint=' + ($('Parse Hermes assessment').item.json.verdict_hint || 'pass') + '\\n理由: ' + (($('Parse Hermes assessment').item.json.reasons||[]).join('；')) + '\\n建議: ' + (($('Parse Hermes assessment').item.json.suggestions||[]).join('；')) }}",
-              "type": "string"
-            }
-          ]
-        },
-        "options": {}
-      },
-      "id": "set-review-caption",
-      "name": "Set review caption",
-      "type": "n8n-nodes-base.set",
-      "typeVersion": 3.4,
-      "position": [
-        2860,
-        -60
-      ]
-    },
-    {
-      "parameters": {
-        "mode": "runOnceForEachItem",
-        "jsCode": "const png = $('Read post.png').item;\nif (!png.binary?.data) {\n  throw new Error('Read post.png has no binary data; run Render PNG first and ensure post.png exists');\n}\nconst caption = $('Set review caption').item.json.review_caption;\nreturn { json: { ...$input.item.json, review_caption: caption }, binary: png.binary };"
-      },
-      "id": "attach-preview-binary",
-      "name": "Attach preview binary",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        2980,
-        -60
-      ]
-    },
-    {
-      "parameters": {
-        "operation": "sendPhoto",
-        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
-        "binaryData": true,
-        "replyMarkup": "inlineKeyboard",
-        "inlineKeyboard": {
-          "rows": [
-            {
-              "row": {
-                "buttons": [
-                  {
-                    "text": "✅ Approve",
-                    "additionalFields": {
-                      "callback_data": "={{ 'am:v1:approve:' + $('Set run context').item.json.run_id }}"
-                    }
-                  },
-                  {
-                    "text": "🛠 Revise",
-                    "additionalFields": {
-                      "callback_data": "={{ 'am:v1:revise:' + $('Set run context').item.json.run_id }}"
-                    }
-                  },
-                  {
-                    "text": "❌ Reject",
-                    "additionalFields": {
-                      "callback_data": "={{ 'am:v1:reject:' + $('Set run context').item.json.run_id }}"
-                    }
-                  }
-                ]
-              }
-            }
-          ]
-        },
-        "caption": "={{ $json.review_caption }}",
-        "additionalFields": {}
-      },
-      "id": "telegram-preview-stage1",
-      "name": "Telegram HITL preview",
-      "type": "n8n-nodes-base.telegram",
-      "typeVersion": 1.2,
-      "position": [
-        3080,
-        0
-      ],
-      "credentials": {
-        "telegramApi": {
-          "id": "CONFIGURE_ME",
-          "name": "Telegram account"
-        }
-      }
-    },
-    {
-      "parameters": {
-        "command": "=/bin/bash /data/scripts/append_review_audit.sh --run-id \"{{ $('Set run context').item.json.run_id }}\" --actor human --decision \"{{ $json.body?.callback || $json.query?.callback || $json.callback }}\" --review-round 1 --risk-level \"{{ $('Parse Hermes assessment').item.json.risk_level || '' }}\" --high-risk-approved \"{{ (($json.body?.callback || $json.query?.callback || $json.callback) === 'approve' && ($('Parse Hermes assessment').item.json.risk_level === 'high')) ? 'true' : 'false' }}\" --reasons-json \"{{ JSON.stringify($('Parse Hermes assessment').item.json.reasons || []) }}\" --suggestions-json \"{{ JSON.stringify($('Parse Hermes assessment').item.json.suggestions || []) }}\""
+        "command": "=/bin/bash /data/scripts/append_review_audit.sh --run-id \"{{ $('Set run context').item.json.run_id }}\" --actor human --decision \"{{ $json.body?.callback || $json.query?.callback || $json.callback }}\" --review-round 1 --risk-level \"{{ $('Load hermes assessment').item.json.hermes.risk_level || '' }}\" --high-risk-approved \"{{ (($json.body?.callback || $json.query?.callback || $json.callback) === 'approve' && ($('Load hermes assessment').item.json.hermes.risk_level === 'high')) ? 'true' : 'false' }}\" --reasons-json \"{{ JSON.stringify($('Load hermes assessment').item.json.hermes.reasons || []) }}\" --suggestions-json \"{{ JSON.stringify($('Load hermes assessment').item.json.hermes.suggestions || []) }}\""
       },
       "id": "audit-human-decision-v1",
       "name": "Audit human decision v1",
@@ -1123,7 +936,7 @@
     },
     {
       "parameters": {
-        "command": "=/bin/bash /data/scripts/append_review_audit.sh --run-id \"{{ $('Set run context').item.json.run_id }}\" --actor human --decision \"{{ $json.body?.callback || $json.query?.callback || $json.callback }}\" --review-round 2 --risk-level \"{{ $('Parse Hermes assessment').item.json.risk_level || '' }}\" --high-risk-approved \"{{ (($json.body?.callback || $json.query?.callback || $json.callback) === 'approve' && ($('Parse Hermes assessment').item.json.risk_level === 'high')) ? 'true' : 'false' }}\""
+        "command": "=/bin/bash /data/scripts/append_review_audit.sh --run-id \"{{ $('Set run context').item.json.run_id }}\" --actor human --decision \"{{ $json.body?.callback || $json.query?.callback || $json.callback }}\" --review-round 2 --risk-level \"{{ $('Load hermes assessment').item.json.hermes.risk_level || '' }}\" --high-risk-approved \"{{ (($json.body?.callback || $json.query?.callback || $json.callback) === 'approve' && ($('Load hermes assessment').item.json.hermes.risk_level === 'high')) ? 'true' : 'false' }}\""
       },
       "id": "audit-human-decision-v2",
       "name": "Audit human decision v2",
@@ -1158,19 +971,6 @@
       "position": [
         2640,
         180
-      ]
-    },
-    {
-      "parameters": {
-        "command": "=/bin/bash /data/scripts/append_review_audit.sh --run-id \"{{ $('Set run context').item.json.run_id }}\" --actor system --decision schema_error --review-round 0 --stop-reason schema_error"
-      },
-      "id": "audit-schema-error",
-      "name": "Audit schema error",
-      "type": "n8n-nodes-base.executeCommand",
-      "typeVersion": 1,
-      "position": [
-        2640,
-        -180
       ]
     },
     {
@@ -1245,6 +1045,20 @@
       "position": [
         2640,
         200
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const fs = require('fs');\nconst runId = $('Set run context').item.json.run_id;\nlet hermes = {};\ntry { hermes = JSON.parse(fs.readFileSync('/data/runs/' + runId + '/hermes_assessment.json', 'utf8')); } catch (e) { hermes = {}; }\nreturn { json: { ...$json, hermes } };"
+      },
+      "id": "load-assess-ddedb982f623",
+      "name": "Load hermes assessment",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2360,
+        0
       ]
     }
   ],
@@ -1349,121 +1163,14 @@
             "node": "Save wait resume URL (stage1)",
             "type": "main",
             "index": 0
-          }
-        ]
-      ]
-    },
-    "Read post.png": {
-      "main": [
-        [
+          },
           {
-            "node": "Merge review inputs",
+            "node": "Read post.png",
             "type": "main",
             "index": 0
-          }
-        ]
-      ]
-    },
-    "Read post.md": {
-      "main": [
-        [
+          },
           {
-            "node": "Merge review inputs",
-            "type": "main",
-            "index": 1
-          }
-        ]
-      ]
-    },
-    "Merge review inputs": {
-      "main": [
-        [
-          {
-            "node": "Hermes prereview",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Hermes prereview": {
-      "main": [
-        [
-          {
-            "node": "Parse Hermes assessment",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Parse Hermes assessment": {
-      "main": [
-        [
-          {
-            "node": "Switch assessment schema",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Switch assessment schema": {
-      "main": [
-        [
-          {
-            "node": "Audit hermes prereview",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Audit schema error",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Audit hermes prereview": {
-      "main": [
-        [
-          {
-            "node": "Set review caption",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Set review caption": {
-      "main": [
-        [
-          {
-            "node": "Attach preview binary",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Attach preview binary": {
-      "main": [
-        [
-          {
-            "node": "Telegram HITL preview",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Telegram HITL preview": {
-      "main": [
-        [
-          {
-            "node": "Wait for approval (stage1)",
+            "node": "Read post.md",
             "type": "main",
             "index": 0
           }
@@ -1869,6 +1576,17 @@
       ]
     },
     "Check resume type (stage1)": {
+      "main": [
+        [
+          {
+            "node": "Load hermes assessment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load hermes assessment": {
       "main": [
         [
           {
