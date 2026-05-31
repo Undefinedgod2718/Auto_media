@@ -384,3 +384,51 @@ bash scripts/check_telegram_hitl.sh     # 診斷 Wait / forwarder / Telegram
 ## 進階（工程師）
 
 `[workflows/auto-media-happy-path.json](../workflows/auto-media-happy-path.json)` 為同一流程的 **匯出備份**，僅供版本對照或還原，**一般操作請以本手冊在網頁建立為準**。
+
+---
+
+## PR-0：實機驗證 n8n HITL 語意（前置步驟）
+
+`scripts/verify_n8n_hitl_semantics.sh` 用實機探測四個 HITL 行為（Q1–Q4），**結果決定 1802 行 workflow 改動是否站得住**。跑此腳本前，必須先把探測 workflow 匯入並啟用。
+
+> **前提**：只能在跑得起 n8n 2.21.x 的環境執行（Dev Container / Linux host）。Windows 本機無 n8n，無法執行。
+
+### 步驟
+
+1. **設定 API Key**
+   - n8n UI → **Settings → n8n API → Create API Key**
+   - 貼到 `.env`：
+     ```
+     N8N_API_URL=http://localhost:5678
+     N8N_API_KEY=<貼上>
+     ```
+
+2. **匯入探測 workflow**
+   - n8n UI → **Workflows → Import from File** → `workflows/verify-wait-probe.json`
+   - 開啟後右上角 **Active** 切為開啟（必須 active，腳本才找得到）
+
+3. **啟動 n8n**（若未啟動）
+   ```bash
+   docker compose up -d n8n
+   curl -fsS http://localhost:5678/healthz
+   ```
+
+4. **執行探測**
+   ```bash
+   bash scripts/verify_n8n_hitl_semantics.sh
+   cat data/logs/n8n_semantics.json
+   ```
+
+### 判讀 `data/logs/n8n_semantics.json`
+
+| 欄位 | 問題 | 期望 |
+|------|------|------|
+| `q1_wait_status_sequence.observed_sequence` | 進 Wait 前後 execution status | 見 `running` → `waiting`；`waiting_observed: true` |
+| `q2_limit_wait_ttl_payload.after_wait_json_on_timeout` | `limitWaitTime`(10s) 超時後 `After wait` 收到的 `$json` | 確認「無 callback 欄位 = 超時」判別法 |
+| `q3_delete_waiting_execution.delete_http` / `post_delete_status` | 對 waiting execution `DELETE` 結果 | 確認 abort（未 waiting 來源）可用 DELETE |
+| `q4_resume_url_when_not_waiting.resume_url_http_when_not_waiting` | execution 非 waiting 時打 resume_url 的 code | 確認非 waiting 時 resume 無效（abort 分流依據） |
+
+- **`passed: true`** ＝ 四問全完成且 Q1 觀測到 `waiting`。
+- **`passed: false`** ＋ `note` ＝ 缺項或某問未完成；按 note 修正後重跑。腳本**不會**在未驗證時假裝通過。
+
+四問拿到真答案前，`auto-media-happy-path.json` 的 Save→Schedule→Wait、Check resume type、abort 分流、forwarder resume_url 皆為**未驗證假設**。
