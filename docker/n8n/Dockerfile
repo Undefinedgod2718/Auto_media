@@ -26,6 +26,8 @@ ENV LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
     AUTO_MEDIA_ROOT=/data \
     N8N_USER_FOLDER=/home/node/.n8n \
+    N8N_RESTRICT_FILE_ACCESS_TO=/data \
+    FILESYSTEM_ALLOWED_PATHS=/data \
     NODE_ENV=production
 
 USER node

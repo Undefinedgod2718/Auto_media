@@ -1,0 +1,78 @@
+{
+  "name": "verify-wait-probe",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "verify-wait-probe",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 0],
+      "webhookId": "verify-wait-probe"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "probe_id",
+              "name": "probe_id",
+              "value": "={{ $json.body?.probe_id || $json.probe_id || 'probe' }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-probe",
+      "name": "Set probe context",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [220, 0]
+    },
+    {
+      "parameters": {
+        "resume": "webhook",
+        "limitWaitTime": true,
+        "limitType": "afterTimeInterval",
+        "amount": 10,
+        "unit": "seconds",
+        "options": {}
+      },
+      "id": "wait-probe",
+      "name": "Wait probe",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [440, 0],
+      "webhookId": "verify-wait-probe-wait"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "return { json: { resumed: true, payload: $json } };"
+      },
+      "id": "after-wait",
+      "name": "After wait",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [660, 0]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [[{ "node": "Set probe context", "type": "main", "index": 0 }]]
+    },
+    "Set probe context": {
+      "main": [[{ "node": "Wait probe", "type": "main", "index": 0 }]]
+    },
+    "Wait probe": {
+      "main": [[{ "node": "After wait", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": { "executionOrder": "v1" }
+}

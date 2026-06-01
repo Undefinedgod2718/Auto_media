@@ -26,6 +26,17 @@ uv_run_apply() {
 cmd_apply() {
   uv_run_apply
   bash "${REPO_ROOT}/scripts/fix-data-perms.sh"
+  if python3 - "$PLATFORM_YAML" <<'PY' 2>/dev/null | grep -q true; then
+import sys, yaml
+from pathlib import Path
+p = Path(sys.argv[1])
+data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+print((data.get("features") or {}).get("hermes_gateway") is True)
+PY
+    if [[ -x "${REPO_ROOT}/scripts/enforce_telegram_gateway.sh" ]] && [[ -n "${TELEGRAM_BOT_TOKEN:-}" ]]; then
+      bash "${REPO_ROOT}/scripts/enforce_telegram_gateway.sh" || echo "warn: enforce_telegram_gateway failed (non-fatal)" >&2
+    fi
+  fi
   echo "apply: ok"
 }
 

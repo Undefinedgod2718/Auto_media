@@ -29,23 +29,6 @@
     },
     {
       "parameters": {
-        "httpMethod": "POST",
-        "path": "auto-media-run",
-        "responseMode": "onReceived",
-        "options": {}
-      },
-      "id": "webhook-run",
-      "name": "Webhook Run",
-      "type": "n8n-nodes-base.webhook",
-      "typeVersion": 2,
-      "position": [
-        -220,
-        120
-      ],
-      "webhookId": "auto-media-run"
-    },
-    {
-      "parameters": {
         "command": "cat /data/config/platform.runtime.json"
       },
       "id": "load-runtime",
@@ -64,19 +47,19 @@
             {
               "id": "run_id",
               "name": "run_id",
-              "value": "={{ $json.body?.run_id || $now.format('yyyyMMdd-HHmmss') + '-' + $execution.id }}",
+              "value": "={{ $now.format('yyyyMMdd-HHmmss') }}-{{ $execution.id }}",
               "type": "string"
             },
             {
               "id": "topic",
               "name": "topic",
-              "value": "={{ $json.body?.topic || $json.topic || 'AI 發展趨勢' }}",
+              "value": "AI 發展趨勢",
               "type": "string"
             },
             {
               "id": "audience",
               "name": "audience",
-              "value": "={{ $json.body?.audience || $json.audience || '25-35 歲科技愛好者' }}",
+              "value": "25-35 歲科技愛好者",
               "type": "string"
             }
           ]
@@ -94,7 +77,7 @@
     },
     {
       "parameters": {
-        "command": "=mkdir -p /data/runs/{{ $json.run_id }} && /bin/bash /data/scripts/write_task.sh --run-id \"{{ $json.run_id }}\" --topic \"{{ $json.topic }}\" --audience \"{{ $json.audience }}\" --action generate_copy"
+        "command": "=`/bin/bash /data/scripts/write_task.sh --run-id ${$json.run_id} --topic ${$json.topic} --audience ${$json.audience} --action generate_copy`"
       },
       "id": "write-task",
       "name": "Write TASK.md",
@@ -107,7 +90,7 @@
     },
     {
       "parameters": {
-        "command": "=/bin/bash /data/scripts/generate_copy.sh --run-id \"{{ $('Set run context').item.json.run_id }}\""
+        "command": "=`/bin/bash /data/scripts/generate_copy.sh --run-id ${$('Set run context').first().json.run_id}`"
       },
       "id": "invoke-copy",
       "name": "Invoke copywriter",
@@ -120,7 +103,7 @@
     },
     {
       "parameters": {
-        "command": "=/bin/bash /data/scripts/generate_svg.sh --run-id \"{{ $('Set run context').item.json.run_id }}\""
+        "command": "=`/bin/bash /data/scripts/generate_svg.sh --run-id ${$('Set run context').first().json.run_id}`"
       },
       "id": "invoke-svg",
       "name": "Invoke svg artist",
@@ -133,7 +116,7 @@
     },
     {
       "parameters": {
-        "command": "=/bin/bash /data/scripts/render_png.sh --run-id \"{{ $('Set run context').item.json.run_id }}\""
+        "command": "=`/bin/bash /data/scripts/render_png.sh --run-id ${$('Set run context').first().json.run_id}`"
       },
       "id": "render-png",
       "name": "Render PNG",
@@ -315,7 +298,7 @@
     },
     {
       "parameters": {
-        "command": "=/bin/bash /data/scripts/write_circuit_breaker.sh \"{{ $('Set run context').item.json.run_id }}\" \"{{ $json.statusCode }}\" \"{{ $json.body }}\""
+        "command": "=`/bin/bash /data/scripts/write_circuit_breaker.sh ${$('Set run context').first().json.run_id} ${String($json.statusCode || '')} '${JSON.stringify($json.body || \"\")}'`"
       },
       "id": "circuit-breaker",
       "name": "Write api_dead.json",
@@ -342,7 +325,7 @@
     },
     {
       "parameters": {
-        "command": "=/bin/bash /data/scripts/upload_catbox.sh --run-id \"{{ $('Set run context').item.json.run_id }}\" | jq -r '.image_url'"
+        "command": "=`/bin/bash /data/scripts/upload_catbox.sh --run-id ${$('Set run context').first().json.run_id}`"
       },
       "id": "upload-catbox",
       "name": "Upload image to catbox",
@@ -367,7 +350,7 @@
             },
             {
               "name": "image_url",
-              "value": "={{ $json.stdout.trim() }}"
+              "value": "={{ $json.image_url }}"
             },
             {
               "name": "text",
@@ -421,7 +404,7 @@
     },
     {
       "parameters": {
-        "command": "=/bin/bash /data/scripts/write_hitl_reply_map.sh --message-id \"{{ $json.result?.message_id || $json.message_id }}\" --run-id \"{{ $('Set run context').item.json.run_id }}\" --stage \"{{ $json.body?.stage || $json.query?.stage || $json.stage || 'v1' }}\" --decision \"{{ $json.body?.callback || $json.query?.callback || $json.callback || 'revise' }}\""
+        "command": "=`/bin/bash /data/scripts/write_hitl_reply_map.sh --message-id ${String($json.result && $json.result.message_id ? $json.result.message_id : ($json.message_id || ''))} --run-id ${$('Set run context').first().json.run_id} --stage ${($json.body && $json.body.stage) || ($json.query && $json.query.stage) || $json.stage || 'v1'} --decision ${($json.body && $json.body.callback) || ($json.query && $json.query.callback) || $json.callback || 'revise'}`"
       },
       "id": "save-hitl-reply-map",
       "name": "Save HITL reply map",
@@ -496,7 +479,7 @@
     },
     {
       "parameters": {
-        "command": "=/bin/bash /data/scripts/apply_feedback_task.sh --run-id \"{{ $('Set run context').item.json.run_id }}\" --feedback-file \"/data/hitl/feedback/{{ $('Set run context').item.json.run_id }}.txt\""
+        "command": "=`/bin/bash /data/scripts/apply_feedback_task.sh --run-id ${$('Set run context').first().json.run_id} --feedback-file /data/hitl/feedback/${$('Set run context').first().json.run_id}.txt`"
       },
       "id": "apply-feedback-task",
       "name": "Apply feedback to TASK.md",
@@ -509,7 +492,7 @@
     },
     {
       "parameters": {
-        "command": "=/bin/bash /data/scripts/generate_copy.sh --run-id \"{{ $('Set run context').item.json.run_id }}\""
+        "command": "=`/bin/bash /data/scripts/generate_copy.sh --run-id ${$('Set run context').first().json.run_id}`"
       },
       "id": "rerun-copywriter",
       "name": "Rerun copywriter",
@@ -522,7 +505,7 @@
     },
     {
       "parameters": {
-        "command": "=/bin/bash /data/scripts/render_png.sh --run-id \"{{ $('Set run context').item.json.run_id }}\""
+        "command": "=`/bin/bash /data/scripts/render_png.sh --run-id ${$('Set run context').first().json.run_id}`"
       },
       "id": "rerun-render-png",
       "name": "Rerun render PNG",
@@ -540,32 +523,33 @@
         "binaryData": true,
         "replyMarkup": "inlineKeyboard",
         "inlineKeyboard": {
-          "rows": [
-            {
-              "row": {
-                "buttons": [
-                  {
-                    "text": "✅ Approve",
-                    "additionalFields": {
-                      "callback_data": "={{ 'am:v2:approve:' + $('Set run context').item.json.run_id }}"
+            "rows": [
+              {
+                "row": {
+                  "buttons": [
+                    {
+                      "text": "✅ Approve",
+                      "additionalFields": {
+                        "callback_data": "={{ 'am:v2:approve:' + $('Set run context').item.json.run_id }}"
+                      }
+                    },
+                    {
+                      "text": "🛠 Revise",
+                      "additionalFields": {
+                        "callback_data": "={{ 'am:v2:revise:' + $('Set run context').item.json.run_id }}"
+                      }
+                    },
+                    {
+                      "text": "❌ Reject",
+                      "additionalFields": {
+                        "callback_data": "={{ 'am:v2:reject:' + $('Set run context').item.json.run_id }}"
+                      }
                     }
-                  },
-                  {
-                    "text": "🛠 Revise",
-                    "additionalFields": {
-                      "callback_data": "={{ 'am:v2:revise:' + $('Set run context').item.json.run_id }}"
-                    }
-                  },
-                  {
-                    "text": "❌ Reject",
-                    "additionalFields": {
-                      "callback_data": "={{ 'am:v2:reject:' + $('Set run context').item.json.run_id }}"
-                    }
-                  }
-                ]
+                  ]
+                }
               }
-            }
-          ]
+            ]
+          }
         },
         "additionalFields": {
           "caption": "=（修正後）\\n{{ $('Read post.md (stage2)').item.json.data }}"
@@ -716,7 +700,196 @@
     },
     {
       "parameters": {
-        "command": "=/bin/bash /data/scripts/append_review_audit.sh --run-id \"{{ $('Set run context').item.json.run_id }}\" --actor human --decision \"{{ $json.body?.callback || $json.query?.callback || $json.callback }}\" --review-round 1 --risk-level \"{{ $('Load hermes assessment').item.json.hermes.risk_level || '' }}\" --high-risk-approved \"{{ (($json.body?.callback || $json.query?.callback || $json.callback) === 'approve' && ($('Load hermes assessment').item.json.hermes.risk_level === 'high')) ? 'true' : 'false' }}\" --reasons-json \"{{ JSON.stringify($('Load hermes assessment').item.json.hermes.reasons || []) }}\" --suggestions-json \"{{ JSON.stringify($('Load hermes assessment').item.json.hermes.suggestions || []) }}\""
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "id": "merge-review-inputs",
+      "name": "Merge review inputs",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        1760,
+        -60
+      ]
+    },
+    {
+      "parameters": {
+        "command": "=`/bin/bash /data/scripts/hermes_prereview.sh --run-id ${$('Set run context').first().json.run_id}`"
+      },
+      "id": "hermes-prereview",
+      "name": "Hermes prereview",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        1980,
+        -60
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const raw=$json.stdout||'{}'; let a; try { a=JSON.parse(raw);} catch(e){throw new Error('invalid hermes assessment:'+raw);} const req=['run_id','review_round','verdict_hint','skill_compliance','reasons','suggestions','risk_level','rerun_scope_hint']; const missing=req.filter(k=>a[k]===undefined); return { json: { ...a, schema_valid: missing.length===0, missing_fields: missing } };"
+      },
+      "id": "parse-hermes-assessment",
+      "name": "Parse Hermes assessment",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2200,
+        -60
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.schema_valid }}",
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "valid"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "id": "switch-assessment-schema",
+      "name": "Switch assessment schema",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        2420,
+        -60
+      ]
+    },
+    {
+      "parameters": {
+        "command": "=`/bin/bash /data/scripts/append_review_audit.sh --run-id ${$json.run_id || ''} --actor hermes --decision ${$json.verdict_hint || ''} --review-round ${$json.review_round !== undefined ? $json.review_round : 0} --risk-level ${$json.risk_level || ''} --reasons-json '${JSON.stringify($json.reasons || [])}' --suggestions-json '${JSON.stringify($json.suggestions || [])}' --rerun-scope ${$json.rerun_scope_hint || ''}`"
+      },
+      "id": "audit-hermes-prereview",
+      "name": "Audit hermes prereview",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        2640,
+        -60
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "duplicateItem": false,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "review_caption",
+              "name": "review_caption",
+              "value": "={{ $('Read post.md').item.json.data + '\\n\\n[Hermes初審] risk=' + ($('Parse Hermes assessment').item.json.risk_level || 'low') + ' | hint=' + ($('Parse Hermes assessment').item.json.verdict_hint || 'pass') + '\\n理由: ' + (($('Parse Hermes assessment').item.json.reasons||[]).join('；')) + '\\n建議: ' + (($('Parse Hermes assessment').item.json.suggestions||[]).join('；')) }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-review-caption",
+      "name": "Set review caption",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2860,
+        -60
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const png = $('Read post.png').item;\nif (!png.binary?.data) {\n  throw new Error('Read post.png has no binary data; run Render PNG first and ensure post.png exists');\n}\nconst caption = $('Set review caption').item.json.review_caption;\nreturn { json: { ...$input.item.json, review_caption: caption }, binary: png.binary };"
+      },
+      "id": "attach-preview-binary",
+      "name": "Attach preview binary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2980,
+        -60
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "sendPhoto",
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "binaryData": true,
+        "replyMarkup": "inlineKeyboard",
+        "inlineKeyboard": {
+            "rows": [
+              {
+                "row": {
+                  "buttons": [
+                    {
+                      "text": "✅ Approve",
+                      "additionalFields": {
+                        "callback_data": "={{ 'am:v1:approve:' + $('Set run context').item.json.run_id }}"
+                      }
+                    },
+                    {
+                      "text": "🛠 Revise",
+                      "additionalFields": {
+                        "callback_data": "={{ 'am:v1:revise:' + $('Set run context').item.json.run_id }}"
+                      }
+                    },
+                    {
+                      "text": "❌ Reject",
+                      "additionalFields": {
+                        "callback_data": "={{ 'am:v1:reject:' + $('Set run context').item.json.run_id }}"
+                      }
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "additionalFields": {
+          "caption": "={{ $json.review_caption }}"
+        }
+      },
+      "id": "telegram-preview-stage1",
+      "name": "Telegram HITL preview",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        3080,
+        0
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "CONFIGURE_ME",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "command": "=`/bin/bash /data/scripts/append_review_audit.sh --run-id ${$('Set run context').first().json.run_id} --actor human --decision ${($json.body && $json.body.callback) || ($json.query && $json.query.callback) || $json.callback || ''} --review-round 1 --risk-level ${$('Parse Hermes assessment').first().json.risk_level || ''} --high-risk-approved ${(($json.body && $json.body.callback) || ($json.query && $json.query.callback) || $json.callback) === 'approve' && $('Parse Hermes assessment').first().json.risk_level === 'high' ? 'true' : 'false'} --reasons-json '${JSON.stringify($('Parse Hermes assessment').first().json.reasons || [])}' --suggestions-json '${JSON.stringify($('Parse Hermes assessment').first().json.suggestions || [])}'`"
       },
       "id": "audit-human-decision-v1",
       "name": "Audit human decision v1",
@@ -756,7 +929,7 @@
     },
     {
       "parameters": {
-        "command": "=/bin/bash /data/scripts/hermes_revision_plan.sh --run-id \"{{ $('Set run context').item.json.run_id }}\" --decision \"{{ $('Set feedback text').item.json.human_decision }}\" --feedback-file \"/data/hitl/feedback/{{ $('Set run context').item.json.run_id }}.txt\" --review-round 1"
+        "command": "=`/bin/bash /data/scripts/hermes_revision_plan.sh --run-id ${$('Set run context').first().json.run_id} --decision ${$('Set feedback text').first().json.human_decision || 'revise'} --feedback-file /data/hitl/feedback/${$('Set run context').first().json.run_id}.txt --review-round 1`"
       },
       "id": "hermes-revision-plan",
       "name": "Hermes revision plan",
@@ -783,7 +956,7 @@
     },
     {
       "parameters": {
-        "command": "=/bin/bash /data/scripts/append_review_audit.sh --run-id \"{{ $json.run_id }}\" --actor hermes --decision revise --review-round \"{{ $json.review_round || 1 }}\" --rerun-scope \"{{ $json.rerun_scope || 'copy_only' }}\" --suggestions-json \"{{ JSON.stringify($json.revision_plan || []) }}\""
+        "command": "=`/bin/bash /data/scripts/append_review_audit.sh --run-id ${$json.run_id || $('Set run context').first().json.run_id} --actor hermes --decision revise --review-round ${$json.review_round !== undefined ? $json.review_round : 1} --rerun-scope ${$json.rerun_scope || 'copy_only'} --suggestions-json '${JSON.stringify($json.revision_plan || [])}'`"
       },
       "id": "audit-hermes-revision",
       "name": "Audit hermes revision",
@@ -881,7 +1054,7 @@
     },
     {
       "parameters": {
-        "command": "=/bin/bash /data/scripts/generate_copy.sh --run-id \"{{ $('Set run context').item.json.run_id }}\""
+        "command": "=`/bin/bash /data/scripts/generate_copy.sh --run-id ${$('Set run context').first().json.run_id}`"
       },
       "id": "invoke-copy-revision",
       "name": "Invoke copywriter (revision)",
@@ -894,7 +1067,7 @@
     },
     {
       "parameters": {
-        "command": "=/bin/bash /data/scripts/generate_svg.sh --run-id \"{{ $('Set run context').item.json.run_id }}\""
+        "command": "=`/bin/bash /data/scripts/generate_svg.sh --run-id ${$('Set run context').first().json.run_id}`"
       },
       "id": "invoke-svg-revision",
       "name": "Invoke svg artist (revision)",
@@ -936,7 +1109,7 @@
     },
     {
       "parameters": {
-        "command": "=/bin/bash /data/scripts/append_review_audit.sh --run-id \"{{ $('Set run context').item.json.run_id }}\" --actor human --decision \"{{ $json.body?.callback || $json.query?.callback || $json.callback }}\" --review-round 2 --risk-level \"{{ $('Load hermes assessment').item.json.hermes.risk_level || '' }}\" --high-risk-approved \"{{ (($json.body?.callback || $json.query?.callback || $json.callback) === 'approve' && ($('Load hermes assessment').item.json.hermes.risk_level === 'high')) ? 'true' : 'false' }}\""
+        "command": "=`/bin/bash /data/scripts/append_review_audit.sh --run-id ${$('Set run context').first().json.run_id} --actor human --decision ${($json.body && $json.body.callback) || ($json.query && $json.query.callback) || $json.callback || ''} --review-round 2 --risk-level ${$('Parse Hermes assessment').first().json.risk_level || ''} --high-risk-approved ${(($json.body && $json.body.callback) || ($json.query && $json.query.callback) || $json.callback) === 'approve' && $('Parse Hermes assessment').first().json.risk_level === 'high' ? 'true' : 'false'}`"
       },
       "id": "audit-human-decision-v2",
       "name": "Audit human decision v2",
@@ -949,7 +1122,7 @@
     },
     {
       "parameters": {
-        "command": "=/bin/bash /data/scripts/finalize_review_summary.sh --run-id \"{{ $('Set run context').item.json.run_id }}\" --publish-status success --publish-targets 'facebook,threads'"
+        "command": "=`/bin/bash /data/scripts/finalize_review_summary.sh --run-id ${$('Set run context').first().json.run_id} --publish-status success --publish-targets facebook,threads`"
       },
       "id": "finalize-review-summary-success",
       "name": "Finalize review summary (success)",
@@ -962,7 +1135,7 @@
     },
     {
       "parameters": {
-        "command": "=/bin/bash /data/scripts/finalize_review_summary.sh --run-id \"{{ $('Set run context').item.json.run_id }}\" --publish-status fail --publish-targets 'facebook,threads'"
+        "command": "=`/bin/bash /data/scripts/finalize_review_summary.sh --run-id ${$('Set run context').first().json.run_id} --publish-status fail --publish-targets facebook,threads`"
       },
       "id": "finalize-review-summary-fail",
       "name": "Finalize review summary (fail)",
@@ -975,106 +1148,34 @@
     },
     {
       "parameters": {
-        "mode": "runOnceForEachItem",
-        "jsCode": "const runId = $('Set run context').item.json.run_id;\nconst resumeUrl = String($execution.resumeUrl || '');\nif (!resumeUrl) throw new Error('Missing resumeUrl — use production webhook trigger');\nconst stage = 'v1';\nconst executionId = String($execution.id || '');\nconst fs = require('fs');\nconst dir = '/data/hitl/resume_map';\nfs.mkdirSync(dir, { recursive: true });\nconst mapFile = dir + '/' + runId + '-' + stage + '.json';\nfs.writeFileSync(mapFile, JSON.stringify({ run_id: runId, stage, resume_url: resumeUrl, execution_id: executionId, created_at: new Date().toISOString() }) + '\\n');\nreturn { json: { ...$input.item.json, run_id: runId, resume_url: resumeUrl, execution_id: executionId } };"
+        "command": "=`/bin/bash /data/scripts/append_review_audit.sh --run-id ${$('Set run context').first().json.run_id} --actor system --decision schema_error --review-round 0 --stop-reason schema_error`"
       },
-      "id": "save-resume-v1-130d74c77134",
-      "name": "Save wait resume URL (stage1)",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        1700,
-        -60
-      ]
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "={{ (process.env.GATEWAY_URL || 'http://host.docker.internal:8787') + '/internal/schedule-prereview' }}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "X-Gateway-Secret",
-              "value": "={{ process.env.GATEWAY_INTERNAL_SECRET || '' }}"
-            },
-            {
-              "name": "Content-Type",
-              "value": "application/json"
-            }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ run_id: $(\"Set run context\").item.json.run_id, execution_id: String($execution.id), stage: \"v1\" }) }}",
-        "options": {
-          "timeout": 3000
-        }
-      },
-      "id": "sched-gw-v1-0155a3b8c608",
-      "name": "Schedule Gateway prereview (stage1)",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        1920,
-        -60
-      ]
-    },
-    {
-      "parameters": {
-        "mode": "runOnceForEachItem",
-        "jsCode": "const cb = $json.body?.callback ?? $json.query?.callback ?? $json.callback;\nconst has = ['approve','revise','reject'].includes(String(cb || ''));\nreturn { json: { ...$json, hitl_resume_kind: has ? 'human' : 'ttl_expired', callback: cb || '' } };"
-      },
-      "id": "classify-v1-e585b8259953",
-      "name": "Check resume type (stage1)",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        2200,
-        0
-      ]
-    },
-    {
-      "parameters": {
-        "command": "=/bin/bash -c 'curl -fsS -X POST \"https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage\" -d \"chat_id=${TELEGRAM_CHAT_ID}\" -d \"text=Run {{ $('Set run context').item.json.run_id }} rejected (TTL or abort).\"''"
-      },
-      "id": "notify-reject-v1-23a6ea49c984",
-      "name": "Notify run rejected (stage1)",
+      "id": "audit-schema-error",
+      "name": "Audit schema error",
       "type": "n8n-nodes-base.executeCommand",
       "typeVersion": 1,
       "position": [
         2640,
-        200
+        -180
       ]
     },
     {
-      "parameters": {
-        "mode": "runOnceForEachItem",
-        "jsCode": "const fs = require('fs');\nconst runId = $('Set run context').item.json.run_id;\nlet hermes = {};\ntry { hermes = JSON.parse(fs.readFileSync('/data/runs/' + runId + '/hermes_assessment.json', 'utf8')); } catch (e) { hermes = {}; }\nreturn { json: { ...$json, hermes } };"
-      },
-      "id": "load-assess-ddedb982f623",
-      "name": "Load hermes assessment",
+      "id": "extract-catbox-url",
+      "name": "Extract catbox URL",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        2360,
-        0
-      ]
+        2530,
+        280
+      ],
+      "parameters": {
+        "jsCode": "const raw = $input.first().json.stdout || '';\nlet d = {};\ntry { d = JSON.parse(raw.trim()); } catch(e) { throw new Error('catbox parse error: ' + raw); }\nif (!d.ok) throw new Error('catbox upload failed: ' + raw);\nif (!String(d.image_url || '').startsWith('http')) throw new Error('catbox bad image_url: ' + raw);\nreturn [{ json: { image_url: d.image_url } }];",
+        "mode": "runOnceForAllItems"
+      }
     }
   ],
   "connections": {
     "Schedule Trigger": {
-      "main": [
-        [
-          {
-            "node": "Load platform.runtime.json",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Webhook Run": {
       "main": [
         [
           {
@@ -1160,11 +1261,6 @@
       "main": [
         [
           {
-            "node": "Save wait resume URL (stage1)",
-            "type": "main",
-            "index": 0
-          },
-          {
             "node": "Read post.png",
             "type": "main",
             "index": 0
@@ -1177,11 +1273,128 @@
         ]
       ]
     },
+    "Read post.png": {
+      "main": [
+        [
+          {
+            "node": "Merge review inputs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read post.md": {
+      "main": [
+        [
+          {
+            "node": "Merge review inputs",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge review inputs": {
+      "main": [
+        [
+          {
+            "node": "Hermes prereview",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hermes prereview": {
+      "main": [
+        [
+          {
+            "node": "Parse Hermes assessment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Hermes assessment": {
+      "main": [
+        [
+          {
+            "node": "Switch assessment schema",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch assessment schema": {
+      "main": [
+        [
+          {
+            "node": "Audit hermes prereview",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Audit schema error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Audit hermes prereview": {
+      "main": [
+        [
+          {
+            "node": "Set review caption",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set review caption": {
+      "main": [
+        [
+          {
+            "node": "Attach preview binary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Attach preview binary": {
+      "main": [
+        [
+          {
+            "node": "Telegram HITL preview",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram HITL preview": {
+      "main": [
+        [
+          {
+            "node": "Wait for approval (stage1)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
     "Wait for approval (stage1)": {
       "main": [
         [
           {
-            "node": "Check resume type (stage1)",
+            "node": "Switch callback (stage1)",
             "type": "main",
             "index": 0
           }
@@ -1206,7 +1419,7 @@
         ],
         [
           {
-            "node": "Notify run rejected (stage1)",
+            "node": "Telegram request feedback",
             "type": "main",
             "index": 0
           }
@@ -1233,7 +1446,7 @@
       "main": [
         [
           {
-            "node": "Threads create container",
+            "node": "Extract catbox URL",
             "type": "main",
             "index": 0
           }
@@ -1553,44 +1766,11 @@
         ]
       ]
     },
-    "Save wait resume URL (stage1)": {
+    "Extract catbox URL": {
       "main": [
         [
           {
-            "node": "Schedule Gateway prereview (stage1)",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Schedule Gateway prereview (stage1)": {
-      "main": [
-        [
-          {
-            "node": "Wait for approval (stage1)",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Check resume type (stage1)": {
-      "main": [
-        [
-          {
-            "node": "Load hermes assessment",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Load hermes assessment": {
-      "main": [
-        [
-          {
-            "node": "Switch callback (stage1)",
+            "node": "Threads create container",
             "type": "main",
             "index": 0
           }
