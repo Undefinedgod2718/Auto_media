@@ -468,7 +468,14 @@ def _multipart_send(method: str, fields: dict, file_field: str | None = None, fi
         headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
         method="POST",
     )
-    urllib.request.urlopen(req, timeout=120)
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        raw = resp.read().decode(errors="replace")
+    try:
+        data = json.loads(raw) if raw else {}
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"telegram {method} invalid json response: {e}") from e
+    if not isinstance(data, dict) or not data.get("ok"):
+        raise RuntimeError(f"telegram {method} failed: {data}")
 
 
 def send_preview_album(run_id: str, stage: str, keyboard: dict) -> int:
@@ -523,8 +530,32 @@ def send_preview_album(run_id: str, stage: str, keyboard: dict) -> int:
         headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
         method="POST",
     )
-    urllib.request.urlopen(req, timeout=180)
-    return len(slides)
+    try:
+        with urllib.request.urlopen(req, timeout=180) as resp:
+            raw = resp.read().decode(errors="replace")
+        data = json.loads(raw) if raw else {}
+        if isinstance(data, dict) and data.get("ok"):
+            return len(slides)
+        raise RuntimeError(f"sendMediaGroup failed: {data}")
+    except Exception:
+        LOG.warning(
+            "sendMediaGroup failed, fallback to sendPhoto run_id=%s stage=%s",
+            run_id,
+            stage,
+            exc_info=True,
+        )
+        # Fallback: still provide reviewability if media group fails.
+        sent = 0
+        for i, path in enumerate(slides):
+            cap = caption if i == 0 else ""
+            _multipart_send(
+                "sendPhoto",
+                {"chat_id": TELEGRAM_CHAT_ID, "caption": cap},
+                "photo",
+                path,
+            )
+            sent += 1
+        return sent
 
 
 def send_preview_copy(run_id: str, stage: str) -> None:
@@ -568,7 +599,14 @@ def send_preview_copy(run_id: str, stage: str) -> None:
         headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
         method="POST",
     )
-    urllib.request.urlopen(req, timeout=60)
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        raw = resp.read().decode(errors="replace")
+    try:
+        data = json.loads(raw) if raw else {}
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"telegram sendDocument invalid json response: {e}") from e
+    if not isinstance(data, dict) or not data.get("ok"):
+        raise RuntimeError(f"telegram sendDocument failed: {data}")
 
 
 def _run_post_image(run_id: str) -> Path | None:
@@ -752,7 +790,12 @@ def forward_to_n8n(update: dict) -> None:
     http_json("POST", url, update)
 
 
-def send_hermes_plan(run_id: str, chat_id: str) -> None:
+def send_hermes_plan(
+    run_id: str,
+    chat_id: str,
+    stage: str = "v1",
+    include_review_buttons: bool = False,
+) -> None:
     plan_path = DATA_ROOT / "runs" / run_id / "hermes_plan.json"
     if not plan_path.is_file():
         return
@@ -765,7 +808,13 @@ def send_hermes_plan(run_id: str, chat_id: str) -> None:
         __import__("sys").path.insert(0, sys_path)
     from hermes_content_review import format_telegram
 
-    telegram_api("sendMessage", {"chat_id": chat_id, "text": format_telegram(plan)[:4096]})
+    payload: dict[str, Any] = {
+        "chat_id": chat_id,
+        "text": format_telegram(plan)[:4096],
+    }
+    if include_review_buttons:
+        payload["reply_markup"] = _preview_keyboard(stage, run_id)
+    telegram_api("sendMessage", payload)
 
 
 def trigger_n8n_run(run_id: str, topic: str, chat_id: str, publish_targets: str = "") -> None:
@@ -814,11 +863,22 @@ def worker_loop() -> None:
                 state = poll_execution_ready(eid)
                 if state == "waiting":
                     run_script("hermes_content_review.sh", "--run-id", run_id)
-                    send_hermes_plan(run_id, TELEGRAM_CHAT_ID)
+                    stage = job.get("stage", "v1")
                     if prereview_run(run_id):
-                        send_preview(run_id, job.get("stage", "v1"))
+                        send_hermes_plan(run_id, TELEGRAM_CHAT_ID, stage)
+                        send_preview(run_id, stage)
                     else:
-                        abort_post_wait(run_id, job.get("stage", "v1"), "prereview failed")
+                        LOG.warning(
+                            "prereview failed run_id=%s stage=%s; fallback to plan-only review buttons",
+                            run_id,
+                            stage,
+                        )
+                        send_hermes_plan(
+                            run_id,
+                            TELEGRAM_CHAT_ID,
+                            stage,
+                            include_review_buttons=True,
+                        )
                 elif state == "timeout":
                     abort_pre_wait(eid, run_id, "poll timeout (never reached waiting)")
                 else:

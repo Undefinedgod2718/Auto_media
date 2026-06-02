@@ -152,7 +152,7 @@ def format_telegram(plan: dict) -> str:
     for n in plan.get("notes") or []:
         lines.append(f"⚠ {n}")
     lines.append("")
-    lines.append("以下為完整預覽與審核按鈕。")
+    lines.append("接續會送出完整預覽；若預覽失敗，將在本訊息下方提供審核按鈕。")
     return "\n".join(lines)
 
 
