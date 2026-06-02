@@ -9,6 +9,8 @@ data/hitl/*
 !data/hitl/.gitkeep
 data/logs/*
 !data/logs/.gitkeep
+data/backups/*
+data/locks/*
 data/config/platform.runtime.json
 config/hermes/CONTEXT.md
 config/hermes/mcp.json
