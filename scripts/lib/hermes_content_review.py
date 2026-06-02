@@ -49,7 +49,7 @@ def build_plan(run_dir: Path) -> dict:
     target_hint = int(th_lim.get("chars_per_post_target", 450))
 
     task_path = run_dir / "TASK.md"
-    targets = pt.publish_targets(task_path) if pt else {"instagram", "threads"}
+    targets = pt.publish_targets(task_path) if pt else {"instagram", "threads", "facebook"}
     post_path = run_dir / "post.md"
     text = post_path.read_text(encoding="utf-8", errors="replace") if post_path.is_file() else ""
 

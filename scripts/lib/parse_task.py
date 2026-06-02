@@ -17,10 +17,16 @@ def parse_task(task_path: Path) -> dict[str, str]:
     return out
 
 
+# Unset publish_targets means "all platforms", matching publish_target_gate.sh
+# (unset -> allow all). Production always writes an explicit line, so this
+# default only affects manual/MCP/test runs that omit it.
+ALL_TARGETS = {"instagram", "threads", "facebook"}
+
+
 def publish_targets(task_path: Path) -> set[str]:
     raw = parse_task(task_path).get("publish_targets", "")
     if not raw:
-        return {"threads"}
+        return set(ALL_TARGETS)
     return {p.strip().lower() for p in raw.split(",") if p.strip()}
 
 

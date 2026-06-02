@@ -49,7 +49,7 @@ def validate_structure(post_md: Path, run_dir: Path | None = None) -> dict:
 
         targets = pt.publish_targets(run_dir / "TASK.md")
     except ImportError:
-        targets = {"threads"}
+        targets = {"instagram", "threads", "facebook"}
 
     part1 = extract_part1(text)
     n_posts = count_posts(part1)
