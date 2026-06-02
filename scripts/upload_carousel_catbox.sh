@@ -16,7 +16,7 @@ if [[ -z "$RUN_ID" ]]; then
   exit 1
 fi
 
-RUN_DIR="$(ensure_run_dir "$RUN_ID")"
+RUN_DIR="$(ensure_run_dir "$RUN_ID")" || json_err "missing or unreadable run dir: ${DATA_ROOT}/runs/${RUN_ID}"
 CAROUSEL_DIR="${RUN_DIR}/carousel"
 URLS=()
 
@@ -66,13 +66,28 @@ if [[ ${#URLS[@]} -eq 0 ]]; then
 fi
 
 if [[ ${#URLS[@]} -eq 0 ]]; then
-  echo "{\"ok\":false,\"error\":\"no images under ${RUN_DIR}/carousel or post.png\"}" >&2
-  exit 1
+  python3 - "$RUN_DIR" <<'PY'
+import json, sys
+from pathlib import Path
+
+run_dir = Path(sys.argv[1])
+payload = {
+    "ok": True,
+    "skipped": True,
+    "reason": f"no images under {run_dir}/carousel or post.png",
+    "image_urls": [],
+    "first_url": "",
+}
+print(json.dumps(payload, ensure_ascii=False))
+PY
+  exit 0
 fi
 
 if [[ ${#URLS[@]} -lt 2 ]]; then
-  echo "{\"ok\":false,\"error\":\"IG carousel needs >=2 images, got ${#URLS[@]}\"}" >&2
-  exit 1
+  if /bin/bash "$(dirname "${BASH_SOURCE[0]}")/lib/publish_target_gate.sh" "$RUN_DIR" instagram; then
+    echo "{\"ok\":false,\"error\":\"IG carousel needs >=2 images, got ${#URLS[@]}\"}" >&2
+    exit 1
+  fi
 fi
 
 python3 - "$RUN_DIR" "${URLS[@]}" <<'PY'

@@ -43,6 +43,12 @@ for cfg in platform_limits.json platform.runtime.json; do
   fi
 done
 
+if [[ -d "${ROOT}/config/meta" ]]; then
+  "${DOCKER[@]}" exec "$CONTAINER" mkdir -p /data/config/meta
+  "${DOCKER[@]}" cp "${ROOT}/config/meta/." "${CONTAINER}:/data/config/meta/"
+  echo "synced ${ROOT}/config/meta -> /data/config/meta"
+fi
+
 "${DOCKER[@]}" exec "$CONTAINER" chmod -R a+rx /data/scripts 2>/dev/null || true
 "${DOCKER[@]}" exec "$CONTAINER" test -x /data/scripts/sync_carousel_total.sh
 
@@ -55,6 +61,11 @@ if "${DOCKER[@]}" ps --format '{{.Names}}' | grep -qx "$GATEWAY_CONTAINER"; then
     "${DOCKER[@]}" exec "$GATEWAY_CONTAINER" mkdir -p /data/config
     "${DOCKER[@]}" cp "${ROOT}/data/config/platform_limits.json" "${GATEWAY_CONTAINER}:/data/config/platform_limits.json"
     echo "synced platform_limits.json -> ${GATEWAY_CONTAINER}:/data/config/"
+  fi
+  if [[ -d "${ROOT}/config/meta" ]]; then
+    "${DOCKER[@]}" exec "$GATEWAY_CONTAINER" mkdir -p /data/config/meta
+    "${DOCKER[@]}" cp "${ROOT}/config/meta/." "${GATEWAY_CONTAINER}:/data/config/meta/"
+    echo "synced config/meta -> ${GATEWAY_CONTAINER}:/data/config/meta/"
   fi
 fi
 

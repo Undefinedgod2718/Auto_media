@@ -17,6 +17,8 @@ done
 
 RUN_DIR="$(ensure_run_dir "$RUN_ID")"
 RESULT="${RUN_DIR}/publish_facebook.json"
+run_state_ensure "$RUN_DIR" "$RUN_ID"
+run_state_require_stage "$RUN_DIR" "$RUN_ID" 7 || json_err "run stage not ready for publish (need pre_publish_ok)"
 
 write_result() {
   local ok="$1" skipped="$2" err="${3:-}"
@@ -30,9 +32,22 @@ print(json.dumps(payload, ensure_ascii=False))
 PY
 }
 
-if ! /bin/bash "$(dirname "${BASH_SOURCE[0]}")/lib/publish_target_gate.sh" "$RUN_DIR" facebook; then
+if [[ -f "$RESULT" ]]; then
+  if python3 -c "import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if d.get('ok') and not d.get('skipped') else 1)" "$RESULT" 2>/dev/null; then
+    write_result true true "already_published"
+    exit 0
+  fi
+fi
+
+set +e
+/bin/bash "$(dirname "${BASH_SOURCE[0]}")/lib/publish_target_gate.sh" "$RUN_DIR" facebook
+GATE_EC=$?
+set -e
+if [[ "$GATE_EC" -eq 1 ]]; then
   write_result true true ""
   exit 0
+elif [[ "$GATE_EC" -ne 0 ]]; then
+  json_err "publish target gate failed (ec=${GATE_EC})"
 fi
 
 if [[ -z "${META_PAGE_ID:-}" || -z "${META_PAGE_ACCESS_TOKEN:-}" ]]; then
@@ -47,9 +62,9 @@ fi
 IMAGE_URL="$(python3 -c "import json; print(json.load(open('${RUN_DIR}/catbox_urls.json')).get('first_url',''))" 2>/dev/null || true)"
 [[ -n "$IMAGE_URL" ]] || { write_result false false "no catbox URL"; exit 1; }
 
-POST_MD="${RUN_DIR}/post.md"
+POST_MD="$(PYTHONPATH="$ROOT/scripts/lib" python3 -c "from pathlib import Path; from media_paths import run_post_md; print(run_post_md(Path('$RUN_DIR'),'facebook'))")"
 MESSAGE="$(python3 "$ROOT/scripts/lib/ig_caption.py" "$POST_MD" 2>/dev/null || true)"
-FB_MAX="$(python3 -c "import json; print(json.load(open('$ROOT/data/config/platform_limits.json'))['facebook']['message_max_chars'])")"
+FB_MAX="$(PYTHONPATH="$ROOT/scripts/lib" python3 -c "from platform_limits import load_limits; print(load_limits()['facebook']['message_max_chars'])")"
 MSG_LEN="${#MESSAGE}"
 if [[ "$MSG_LEN" -gt "$FB_MAX" ]]; then
   write_result false false "FB message ${MSG_LEN} chars exceeds limit ${FB_MAX}"
@@ -79,3 +94,4 @@ payload = {"ok": True, "skipped": False, "error": None, "post_id": post_id}
 Path(path).write_text(json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8")
 print(json.dumps(payload, ensure_ascii=False))
 PY
+run_state_py "$RUN_DIR" "$RUN_ID" lock --name facebook_writer --artifact "facebook/publish_facebook.json" --revision 1 >/dev/null || true

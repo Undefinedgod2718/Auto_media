@@ -13,6 +13,8 @@ done
 
 RUN_DIR="$(ensure_run_dir "$RUN_ID")"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+run_state_ensure "$RUN_DIR" "$RUN_ID"
+run_state_require_stage "$RUN_DIR" "$RUN_ID" 3 || json_err "run stage not ready for Hermes review (need validated_pre_hitl)"
 
 # Root-owned hermes_plan.json (e.g. manual docker exec) blocks n8n user overwrite.
 PLAN_FILE="$RUN_DIR/hermes_plan.json"
@@ -25,4 +27,7 @@ OUT="$(PYTHONPATH="$ROOT/scripts/lib" python3 "$ROOT/scripts/lib/hermes_content_
 EC=$?
 set -e
 echo "$OUT"
+if [[ "$EC" -eq 0 ]]; then
+  run_state_mark_stage "$RUN_DIR" "$RUN_ID" "hermes_done" || true
+fi
 exit "$EC"

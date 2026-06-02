@@ -1,12 +1,21 @@
 #!/usr/bin/env bash
-# Exit 0 if platform is in TASK publish_targets (or publish_targets unset → allow).
+# Exit codes:
+# 0: allowed (in publish_targets / unset / no TASK)
+# 1: denied (platform not in publish_targets)
+# 2: gate error (bad args / unreadable TASK)
 set -euo pipefail
-RUN_DIR="${1:?run_dir}"
-PLATFORM="${2:?platform}" # instagram | threads | facebook
+RUN_DIR="${1:-}"
+PLATFORM="${2:-}" # instagram | threads | facebook
+if [[ -z "$RUN_DIR" || -z "$PLATFORM" ]]; then
+  exit 2
+fi
 
 TASK="${RUN_DIR}/TASK.md"
 if [[ ! -f "$TASK" ]]; then
   exit 0
+fi
+if [[ ! -r "$TASK" ]]; then
+  exit 2
 fi
 if ! grep -qi '^publish_targets:' "$TASK"; then
   exit 0

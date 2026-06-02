@@ -15,6 +15,8 @@ done
 RUN_DIR="$(ensure_run_dir "$RUN_ID")"
 TASK_FILE="${RUN_DIR}/TASK.md"
 [[ -f "$TASK_FILE" ]] || json_err "missing TASK.md"
+run_state_ensure "$RUN_DIR" "$RUN_ID"
+run_state_require_stage "$RUN_DIR" "$RUN_ID" 1 || json_err "run stage not ready for artist generation (need writers_done)"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 if ! PYTHONPATH="$ROOT/scripts/lib" python3 -c "
@@ -39,7 +41,7 @@ fi
 SKILL_DIR="/data/config/skills/codex_svg_artist"
 [[ -d "$SKILL_DIR" ]] || SKILL_DIR="${ROOT}/config/skills/codex_svg_artist"
 
-CAROUSEL_DIR="${RUN_DIR}/carousel"
+CAROUSEL_DIR="${RUN_DIR}/instagram/carousel"
 mkdir -p "$CAROUSEL_DIR"
 POST_MD="${RUN_DIR}/post.md"
 
@@ -73,6 +75,11 @@ if [[ -f "${CAROUSEL_DIR}/01.png" ]]; then
 elif [[ -f "${CAROUSEL_DIR}/1.png" ]]; then
   cp -f "${CAROUSEL_DIR}/1.png" "${RUN_DIR}/post.png"
 fi
+
+# Compatibility: keep legacy run/carousel for older publish scripts / tooling.
+mkdir -p "${RUN_DIR}/carousel"
+cp -f "${CAROUSEL_DIR}/"*.png "${RUN_DIR}/carousel/" 2>/dev/null || true
+cp -f "${CAROUSEL_DIR}/"*.jpg "${RUN_DIR}/carousel/" 2>/dev/null || true
 
 CAR_LIMITS="$(python3 "$ROOT/scripts/lib/parse_carousel_total.py" "$POST_MD" --task-md "$TASK_FILE" --json 2>/dev/null || echo '{"min":1,"max":10}')"
 MIN_SLIDES="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['min'])" "$CAR_LIMITS")"
@@ -111,3 +118,4 @@ print(json.dumps({
     'slide_count': len(slides),
 }, ensure_ascii=False))
 " "$CAROUSEL_DIR" "$FAILED" "$MIN_SLIDES"
+run_state_mark_stage "$RUN_DIR" "$RUN_ID" "artists_done" || true

@@ -31,6 +31,8 @@ done
 [[ -n "$RUN_ID" ]] || usage
 
 RUN_DIR="$(ensure_run_dir "$RUN_ID")"
+run_state_ensure "$RUN_DIR" "$RUN_ID"
+run_state_require_stage "$RUN_DIR" "$RUN_ID" 7 || json_err "run stage not ready for publish (need pre_publish_ok)"
 
 write_skipped() {
   local reason="${1:-not in publish_targets}"
@@ -46,9 +48,22 @@ print(json.dumps(payload, ensure_ascii=False))
 PY
 }
 
-if ! /bin/bash "$(dirname "${BASH_SOURCE[0]}")/lib/publish_target_gate.sh" "$RUN_DIR" threads; then
+if [[ -f "${RUN_DIR}/publish_threads.json" ]]; then
+  if python3 -c "import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if d.get('ok') and not d.get('skipped') else 1)" "${RUN_DIR}/publish_threads.json" 2>/dev/null; then
+    write_skipped "already_published"
+    exit 0
+  fi
+fi
+
+set +e
+/bin/bash "$(dirname "${BASH_SOURCE[0]}")/lib/publish_target_gate.sh" "$RUN_DIR" threads
+GATE_EC=$?
+set -e
+if [[ "$GATE_EC" -eq 1 ]]; then
   write_skipped "not in publish_targets"
   exit 0
+elif [[ "$GATE_EC" -ne 0 ]]; then
+  json_err "publish target gate failed (ec=${GATE_EC})"
 fi
 
 if [[ -z "$IMAGE_URL" && -f "${RUN_DIR}/catbox_urls.json" ]]; then
@@ -58,7 +73,7 @@ IMAGE_URL="$(echo "$IMAGE_URL" | tr -d '\r\n' | sed 's/^[[:space:]]*//;s/[[:spac
 HAS_IMAGE=0
 [[ -n "$IMAGE_URL" ]] && HAS_IMAGE=1
 [[ -n "${THREADS_USER_ID:-}" && -n "${THREADS_ACCESS_TOKEN:-}" ]] || json_err "THREADS_USER_ID or THREADS_ACCESS_TOKEN unset"
-POST_MD="${RUN_DIR}/post.md"
+POST_MD="$(PYTHONPATH="$ROOT/scripts/lib" python3 -c "from pathlib import Path; from media_paths import run_post_md; print(run_post_md(Path('$RUN_DIR'),'threads'))")"
 [[ -f "$POST_MD" ]] || json_err "missing post.md at $POST_MD"
 
 CHUNK_JSON="$(python3 "$ROOT/scripts/lib/threads_chunk_post.py" "$POST_MD" --max-chars "$MAX_CHARS" --mode "$CHUNK_MODE")" || json_err "threads_chunk_post failed"
@@ -191,3 +206,4 @@ print(d.get('id',''))
 done
 
 write_result true ""
+run_state_py "$RUN_DIR" "$RUN_ID" lock --name threads_writer --artifact "threads/publish_threads.json" --revision 1 >/dev/null || true

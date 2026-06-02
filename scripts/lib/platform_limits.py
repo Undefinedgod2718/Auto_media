@@ -9,9 +9,10 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from media_paths import config_path, data_root
+from media_paths import config_path, data_root, meta_config_path, run_post_md
 
-DEFAULT_LIMITS_PATH = config_path("platform_limits.json")
+DEFAULT_LIMITS_PATH = meta_config_path("limits.json")
+LEGACY_LIMITS_PATH = config_path("platform_limits.json")
 DATA_ROOT = data_root()
 QUOTA_LEDGER = DATA_ROOT / "hitl" / "publish_quota.jsonl"
 
@@ -30,10 +31,16 @@ class Violation:
 
 
 def load_limits(path: Path | None = None) -> dict[str, Any]:
-    p = path or DEFAULT_LIMITS_PATH
-    if not p.is_file():
-        raise FileNotFoundError(f"platform_limits.json not found: {p}")
-    return json.loads(p.read_text(encoding="utf-8"))
+    if path:
+        if not path.is_file():
+            raise FileNotFoundError(f"platform limits not found: {path}")
+        return json.loads(path.read_text(encoding="utf-8"))
+    for p in (DEFAULT_LIMITS_PATH, LEGACY_LIMITS_PATH):
+        if p.is_file():
+            return json.loads(p.read_text(encoding="utf-8"))
+    raise FileNotFoundError(
+        f"platform limits not found: {DEFAULT_LIMITS_PATH} or {LEGACY_LIMITS_PATH}"
+    )
 
 
 def count_hashtags(text: str) -> int:
@@ -90,9 +97,14 @@ def _carousel_total_from_task(task_md: Path) -> int | None:
 
 
 def _count_carousel_slides(carousel_dir: Path) -> int:
-    if not carousel_dir.is_dir():
-        return 0
-    return len(list(carousel_dir.glob("*.png"))) + len(list(carousel_dir.glob("*.jpg")))
+    primary = 0
+    if carousel_dir.is_dir():
+        primary = len(list(carousel_dir.glob("*.png"))) + len(list(carousel_dir.glob("*.jpg")))
+    alt = carousel_dir.parent / "instagram" / "carousel"
+    secondary = 0
+    if alt != carousel_dir and alt.is_dir():
+        secondary = len(list(alt.glob("*.png"))) + len(list(alt.glob("*.jpg")))
+    return max(primary, secondary)
 
 
 def _targets_from_run(run_dir: Path, targets: set[str] | None) -> set[str]:
@@ -150,15 +162,21 @@ def validate_content(
     targets = _targets_from_run(run_dir, targets)
     violations: list[Violation] = []
 
-    post_md = run_dir / "post.md"
-    text = post_md.read_text(encoding="utf-8", errors="replace") if post_md.is_file() else ""
+    default_post = run_post_md(run_dir)
+    text = default_post.read_text(encoding="utf-8", errors="replace") if default_post.is_file() else ""
     if not text.strip():
         violations.append(
             Violation("system", "missing_post", "缺少 post.md", 0, 1, phase)
         )
         return violations
 
-    part1 = _extract_part1(text)
+    th_post = run_post_md(run_dir, "threads")
+    ig_post = run_post_md(run_dir, "instagram")
+    fb_post = run_post_md(run_dir, "facebook")
+    th_text = th_post.read_text(encoding="utf-8", errors="replace") if th_post.is_file() else text
+    ig_text = ig_post.read_text(encoding="utf-8", errors="replace") if ig_post.is_file() else text
+    fb_text = fb_post.read_text(encoding="utf-8", errors="replace") if fb_post.is_file() else text
+    part1 = _extract_part1(th_text)
     posts = _split_threads_posts(part1)
 
     if "threads" in targets:
@@ -177,7 +195,7 @@ def validate_content(
                     )
                 )
 
-    caption = _extract_ig_caption(text)
+    caption = _extract_ig_caption(ig_text)
 
     if "instagram" in targets:
         cap_max = ig["caption_max_chars"]
@@ -265,7 +283,7 @@ def validate_content(
     violations.extend(_check_image_files(run_dir / "carousel", max_bytes, phase))
 
     if "facebook" in targets:
-        fb_message = caption or part1
+        fb_message = _extract_ig_caption(fb_text) or _extract_part1(fb_text)
         fb_max = fb["message_max_chars"]
         if len(fb_message) > fb_max:
             violations.append(
@@ -286,6 +304,7 @@ def validate_quota(
     phase: str = "pre_publish",
     limits: dict | None = None,
     ledger_path: Path | None = None,
+    run_dir: Path | None = None,
     *,
     ig_enabled: bool = True,
     threads_enabled: bool = True,
@@ -296,6 +315,7 @@ def validate_quota(
 
     count_units = pq.count_units
     planned_units = pq.planned_units
+    planned_units_for_run = pq.planned_units_for_run
 
     lim = limits or load_limits()
     violations: list[Violation] = []
@@ -304,7 +324,7 @@ def validate_quota(
     if ig_enabled:
         ig_lim = lim["instagram"]["posts_per_24h"]
         used = count_units(path, "instagram", hours=24)
-        need = planned_units("instagram")
+        need = planned_units_for_run("instagram", run_dir) if run_dir else planned_units("instagram")
         if used + need > ig_lim:
             violations.append(
                 Violation(
@@ -321,7 +341,7 @@ def validate_quota(
         th = lim["threads"]
         used_24 = count_units(path, "threads", hours=24)
         used_1h = count_units(path, "threads", hours=1)
-        need = planned_units("threads")
+        need = planned_units_for_run("threads", run_dir) if run_dir else planned_units("threads")
         if used_24 + need > th["posts_per_24h"]:
             violations.append(
                 Violation(
@@ -378,6 +398,7 @@ def check_run(
     violations.extend(
         validate_quota(
             phase,
+            run_dir=run_dir,
             ig_enabled=ig_enabled,
             threads_enabled=threads_enabled,
         )

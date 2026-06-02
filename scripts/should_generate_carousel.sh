@@ -13,7 +13,7 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -n "$RUN_ID" ]] || json_err "usage: should_generate_carousel.sh --run-id ID [--json]"
 
-RUN_DIR="$(ensure_run_dir "$RUN_ID")"
+RUN_DIR="$(ensure_run_dir "$RUN_ID")" || json_err "missing or unreadable run dir: ${DATA_ROOT}/runs/${RUN_ID}"
 TASK_FILE="${RUN_DIR}/TASK.md"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -27,9 +27,13 @@ task = Path(sys.argv[1])
 ok = should_generate_carousel(task)
 targets = sorted(publish_targets(task))
 print(json.dumps({'ok': True, 'should_generate': ok, 'publish_targets': targets}, ensure_ascii=False))
-sys.exit(0 if ok else 1)
 " "$TASK_FILE" 2>&1)"
 EC=$?
 set -e
+[[ "$EC" -eq 0 && -n "$OUT" ]] || json_err "should_generate_carousel failed (exit ${EC}): ${OUT:-empty output}"
 echo "$OUT"
-exit "$EC"
+# --json: n8n reads should_generate from stdout; non-zero exit fails ExecuteCommand.
+if [[ -n "${JSON_OUT:-}" ]]; then
+  exit 0
+fi
+python3 -c "import json,sys; sys.exit(0 if json.load(sys.stdin).get('should_generate') else 1)" <<<"$OUT"

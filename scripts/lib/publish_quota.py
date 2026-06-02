@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -19,6 +20,28 @@ PLANNED_UNITS = {
 
 def planned_units(platform: str) -> int:
     return PLANNED_UNITS.get(platform, 0)
+
+
+def _planned_threads_units_from_text(text: str) -> int:
+    by_h3 = len(re.findall(r"###\s*貼文\s*\d+", text, flags=re.I))
+    if by_h3 > 0:
+        return by_h3
+    by_h2 = len(re.findall(r"##\s*第\s*\d+\s*則", text))
+    if by_h2 > 0:
+        return by_h2
+    return 1 if text.strip() else 0
+
+
+def planned_units_for_run(platform: str, run_dir: Path) -> int:
+    if platform != "threads":
+        return planned_units(platform)
+    candidates = [run_dir / "threads" / "post.md", run_dir / "post.md"]
+    for p in candidates:
+        if p.is_file():
+            n = _planned_threads_units_from_text(p.read_text(encoding="utf-8", errors="replace"))
+            if n > 0:
+                return n
+    return planned_units("threads")
 
 
 def _parse_ts(ts: str) -> datetime:

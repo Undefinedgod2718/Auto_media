@@ -31,6 +31,7 @@ done
 
 RUN_DIR="$(ensure_run_dir "$RUN_ID")"
 TASK_FILE="${RUN_DIR}/TASK.md"
+run_state_ensure "$RUN_DIR" "$RUN_ID"
 
 # Default carousel policy from publish_targets when not explicit
 if [[ -z "$GENERATE_CAROUSEL" && -n "$PUBLISH_TARGETS" ]]; then
@@ -58,4 +59,5 @@ fi
   [[ -n "$GENERATE_CAROUSEL" ]] && echo "generate_carousel: ${GENERATE_CAROUSEL}"
 } >"$TASK_FILE"
 
+run_state_mark_stage "$RUN_DIR" "$RUN_ID" "task_written" || true
 json_ok "$TASK_FILE"

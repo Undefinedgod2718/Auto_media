@@ -16,6 +16,8 @@ done
 [[ -n "$RUN_ID" ]] || json_err "usage: finalize_publish_gate.sh --run-id ID"
 
 RUN_DIR="$(ensure_run_dir "$RUN_ID")"
+run_state_ensure "$RUN_DIR" "$RUN_ID"
+run_state_require_stage "$RUN_DIR" "$RUN_ID" 7 || json_err "run stage not ready for finalize publish"
 
 check_file() {
   local name="$1"
@@ -60,5 +62,6 @@ fi
   --run-id "$RUN_ID" --publish-status success --publish-targets "$TARGETS_CSV"
 
 /bin/bash "$(dirname "${BASH_SOURCE[0]}")/record_publish_quota.sh" --run-id "$RUN_ID" >/dev/null
+run_state_mark_stage "$RUN_DIR" "$RUN_ID" "publish_done" || true
 
 python3 -c 'import json; print(json.dumps({"ok": True, "gate": "passed"}, ensure_ascii=False))'

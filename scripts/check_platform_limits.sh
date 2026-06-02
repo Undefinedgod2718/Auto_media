@@ -18,6 +18,10 @@ done
 
 RUN_DIR="$(ensure_run_dir "$RUN_ID")"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+run_state_ensure "$RUN_DIR" "$RUN_ID"
+if [[ "$PHASE" == "pre_publish" ]]; then
+  run_state_require_stage "$RUN_DIR" "$RUN_ID" 4 || json_err "run stage not ready for pre_publish check"
+fi
 
 set +e
 OUT="$(PYTHONPATH="$ROOT/scripts/lib" python3 -c "
@@ -47,5 +51,11 @@ if [[ "$EC" -ne 0 ]]; then
   VIOLATIONS="$(python3 -c "import json,sys; print(json.dumps(json.load(sys.stdin).get('violations',[]), ensure_ascii=False))" <<<"$OUT")"
   /bin/bash "$ROOT/scripts/notify_platform_limit.sh" --run-id "$RUN_ID" --phase "$PHASE" \
     --violations-json "$VIOLATIONS" 2>/dev/null || true
+fi
+if [[ "$PHASE" == "pre_hitl" && "$EC" -eq 0 ]]; then
+  run_state_mark_stage "$RUN_DIR" "$RUN_ID" "validated_pre_hitl" || true
+fi
+if [[ "$PHASE" == "pre_publish" && "$EC" -eq 0 ]]; then
+  run_state_mark_stage "$RUN_DIR" "$RUN_ID" "pre_publish_ok" || true
 fi
 exit "$EC"
