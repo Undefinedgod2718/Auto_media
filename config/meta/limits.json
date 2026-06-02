@@ -1,0 +1,31 @@
+{
+  "instagram": {
+    "posts_per_24h": 25,
+    "carousel_items_max": 10,
+    "carousel_items_min": 2,
+    "caption_max_chars": 2200,
+    "hashtag_max": 30,
+    "image_max_bytes": 8388608,
+    "image_formats": ["jpeg", "png"]
+  },
+  "threads": {
+    "chars_per_post": 500,
+    "chars_per_post_target": 450,
+    "carousel_media_max": 20,
+    "single_post_media_max": 1,
+    "posts_per_24h": 250,
+    "posts_per_hour": 200,
+    "image_max_bytes": 8388608,
+    "image_formats": ["jpeg", "png"]
+  },
+  "facebook": {
+    "message_max_chars": 63206,
+    "album_photos_max": 80,
+    "image_max_bytes": 8388608,
+    "image_formats": ["jpeg", "png"]
+  },
+  "shared": {
+    "image_max_bytes": 8388608,
+    "image_formats": ["jpeg", "png"]
+  }
+}

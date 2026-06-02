@@ -1,0 +1,12 @@
+{
+  "instagram": {
+    "posts_per_24h": 25
+  },
+  "threads": {
+    "posts_per_24h": 250,
+    "posts_per_hour": 200
+  },
+  "facebook": {
+    "posts_per_24h": 25
+  }
+}
