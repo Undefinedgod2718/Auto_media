@@ -52,6 +52,7 @@ def log_gateway(event: str, direction: str, **fields: Any) -> None:
         "latency_ms": fields.get("latency_ms", 0),
         "ok": fields.get("ok", True),
         "error": fields.get("error", ""),
+        "details": fields.get("details", {}),
     }
     with GATEWAY_LOG.open("a", encoding="utf-8") as f:
         f.write(json.dumps(row, ensure_ascii=False) + "\n")
@@ -692,18 +693,58 @@ def _mark_hitl_stage(run_id: str, stage: str) -> None:
     subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=20)
 
 
-def mark_hitl_approval_if_needed(update: dict) -> None:
-    stage, decision, run_id = _parse_hitl_callback(update)
-    if decision != "approve" or not run_id:
-        return
+def _read_stage_state(run_id: str) -> dict[str, Any]:
+    p = DATA_ROOT / "runs" / run_id / "state.json"
+    if not p.is_file():
+        return {"exists": False}
     try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {"exists": True, "invalid": True}
+    return {"exists": True, "stage": data.get("stage"), "stage_seq": data.get("stage_seq")}
+
+
+def mark_hitl_approval_if_needed(update: dict) -> dict[str, Any]:
+    cb = update.get("callback_query") or {}
+    callback_data = str(cb.get("data", ""))
+    stage, decision, run_id = _parse_hitl_callback(update)
+    details: dict[str, Any] = {
+        "callback_data_raw": callback_data,
+        "callback_parse": {"stage": stage, "decision": decision, "run_id": run_id},
+        "mark_attempted": False,
+        "mark_result": "skipped",
+    }
+    if decision != "approve" or not run_id:
+        return details
+    try:
+        details["mark_attempted"] = True
         if stage == "v1":
             _mark_hitl_stage(run_id, "hitl_v1_pass")
         elif stage == "v2":
             _mark_hitl_stage(run_id, "hitl_v2_pass")
+        details["mark_result"] = "ok"
+        details["run_state_after_mark"] = _read_stage_state(run_id)
+        LOG.info(
+            "hitl mark ok callback=%s run_id=%s stage=%s state=%s",
+            callback_data,
+            run_id,
+            stage,
+            details["run_state_after_mark"],
+        )
     except Exception as e:
         # Keep callback forwarding available even when stage mark fails.
-        LOG.warning("mark hitl stage failed run_id=%s stage=%s err=%s", run_id, stage, e)
+        details["mark_result"] = "failed"
+        details["mark_error"] = str(e)
+        details["run_state_after_mark"] = _read_stage_state(run_id)
+        LOG.warning(
+            "mark hitl stage failed callback=%s run_id=%s stage=%s run_dir=%s err=%s",
+            callback_data,
+            run_id,
+            stage,
+            DATA_ROOT / "runs" / run_id,
+            e,
+        )
+    return details
 
 
 def forward_to_n8n(update: dict) -> None:
@@ -749,8 +790,16 @@ def worker_loop() -> None:
         jt = job.get("job_type", "")
         try:
             if jt == "telegram_callback":
-                mark_hitl_approval_if_needed(job["update"])
+                mark_details = mark_hitl_approval_if_needed(job["update"])
                 forward_to_n8n(job["update"])
+                log_gateway(
+                    "telegram_callback_mark",
+                    "out",
+                    job_type=jt,
+                    run_id=(mark_details.get("callback_parse") or {}).get("run_id", ""),
+                    ok=mark_details.get("mark_result") != "failed",
+                    details=mark_details,
+                )
             elif jt == "telegram_feedback":
                 forward_to_n8n(job["update"])
             elif jt == "topic_start":

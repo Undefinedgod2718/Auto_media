@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+doctor_lite() {
+  local out
+  out="$(bash "${ROOT}/scripts/env-check.sh" || true)"
+  # Redact obvious key patterns if present in stderr/stdout.
+  out="$(printf '%s\n' "$out" | sed -E 's/([A-Z0-9_]*(TOKEN|KEY|SECRET)[A-Z0-9_]*=)[^ ]+/\1[REDACTED]/g')"
+  printf '%s\n' "$out"
+}
+
+case "${1:-help}" in
+  open)
+    bash "${ROOT}/scripts/open_user_ui.sh"
+    ;;
+  doctor-lite)
+    doctor_lite
+    ;;
+  help|--help|-h)
+    cat <<'EOF'
+am-user commands:
+  open         Open local user console
+  doctor-lite  Run lightweight health checks (redacted output)
+  help         Show this help
+EOF
+    ;;
+  *)
+    echo "unknown command: $1" >&2
+    exit 1
+    ;;
+esac

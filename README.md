@@ -71,6 +71,16 @@ RUN_ID=test-001
 ls -la "data/runs/$RUN_ID"
 ```
 
+### Non-engineer local UI
+
+```bash
+bash scripts/open_user_ui.sh
+# or
+scripts/am-user open
+```
+
+User guide: [`USER.md`](USER.md)
+
 ## amctl
 
 
@@ -101,6 +111,7 @@ ls -la "data/runs/$RUN_ID"
 - [DATA_PERMISSIONS.md](docs/DATA_PERMISSIONS.md) — `data/` UID / WSL 策略
 - [HERMES_SETUP.md](docs/HERMES_SETUP.md) — Plan B
 - [BROWSER_PROFILE.md](docs/BROWSER_PROFILE.md) — Meta session
+- [USER.md](USER.md) — local UI + safe token input
 
 Official references: [n8n](https://github.com/n8n-io/n8n) · [Hermes Agent](https://github.com/nousresearch/hermes-agent)
 
