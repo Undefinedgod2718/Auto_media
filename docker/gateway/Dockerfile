@@ -14,6 +14,8 @@ RUN apt-get update \
  && useradd -u 1000 -g 1000 -m -s /bin/bash automedia \
  && mkdir -p /app/scripts /data/runs /data/hitl /data/logs
 
+RUN python3 -m pip install --no-cache-dir PyYAML
+
 COPY scripts/ /app/scripts/
 COPY data/config/platform_limits.json /data/config/platform_limits.json
 COPY docker/gateway/entrypoint.sh /entrypoint.sh
