@@ -52,6 +52,13 @@ def extract_caption(post_md: Path) -> str:
         if m:
             caption = m.group(1).strip()
 
+    if not caption:
+        # Fallback for single-block copy without Part 2 / section markers.
+        caption = text.strip()
+
+    # Clean markdown heading markers, but keep hashtags (#tag) intact.
+    caption = re.sub(r"^\s*#{1,6}\s+", "", caption, flags=re.MULTILINE).strip()
+
     return caption[:MAX_LEN]
 
 

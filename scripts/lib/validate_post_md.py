@@ -44,10 +44,13 @@ def validate_structure(post_md: Path, run_dir: Path | None = None) -> dict:
 
     run_dir = run_dir or post_md.parent
     targets: set[str] = set()
+    task_fields: dict[str, str] = {}
     try:
         import parse_task as pt
 
-        targets = pt.publish_targets(run_dir / "TASK.md")
+        task_path = run_dir / "TASK.md"
+        targets = pt.publish_targets(task_path)
+        task_fields = pt.parse_task(task_path)
     except ImportError:
         targets = {"instagram", "threads", "facebook"}
 
@@ -57,8 +60,22 @@ def validate_structure(post_md: Path, run_dir: Path | None = None) -> dict:
     if "threads" in targets and n_posts < 1:
         errors.append("Threads 目標需至少 1 則貼文（### 貼文 N）")
 
-    # Part 2/3 are IG-only per copywriter TEMPLATE.md; threads-only must omit them.
+    # Part 2/3 are only required when IG carousel is actually requested.
+    ig_requires_carousel = False
     if "instagram" in targets:
+        gen_raw = (task_fields.get("generate_carousel") or "").strip().lower()
+        total_raw = (task_fields.get("carousel_total") or "").strip()
+        if gen_raw in {"false", "no", "0"}:
+            ig_requires_carousel = False
+        elif total_raw:
+            try:
+                ig_requires_carousel = int(total_raw) > 0
+            except ValueError:
+                ig_requires_carousel = True
+        else:
+            ig_requires_carousel = True
+
+    if ig_requires_carousel:
         if not re.search(r"##\s*Part\s*2", text, re.I):
             errors.append("missing Part 2 (carousel planning)")
         if not re.search(r"總頁數", text):
