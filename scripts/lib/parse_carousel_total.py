@@ -7,9 +7,10 @@ import json
 import sys
 from pathlib import Path
 
-from media_paths import config_path
+from media_paths import config_path, meta_config_path
 
-LIMITS_PATH = config_path("platform_limits.json")
+LIMITS_PATH = meta_config_path("limits.json")
+LEGACY_LIMITS_PATH = config_path("platform_limits.json")
 
 from carousel_policy import (  # noqa: E402
     effective_carousel_total,
@@ -20,9 +21,10 @@ from carousel_policy import (  # noqa: E402
 
 
 def load_limits() -> dict:
-    if not LIMITS_PATH.is_file():
-        raise FileNotFoundError(f"platform_limits.json not found: {LIMITS_PATH}")
-    return json.loads(LIMITS_PATH.read_text(encoding="utf-8"))
+    for p in (LIMITS_PATH, LEGACY_LIMITS_PATH):
+        if p.is_file():
+            return json.loads(p.read_text(encoding="utf-8"))
+    raise FileNotFoundError(f"limits not found: {LIMITS_PATH} or {LEGACY_LIMITS_PATH}")
 
 
 def ceiling(targets: set[str], lim: dict | None = None) -> tuple[int, int]:

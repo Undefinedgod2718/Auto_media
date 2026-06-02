@@ -36,6 +36,46 @@ engines:
   render:
     provider: rsvg
     binary: rsvg-convert
+  platforms:
+    threads:
+      writer:
+        provider: claude_cli
+        skill_mount: threads_writer
+        fallback:
+          - gemini_cli
+          - codex_cli
+      artist:
+        provider: codex_cli
+        skill_mount: threads_artist
+        fallback:
+          - gemini_cli
+          - claude_cli
+    instagram:
+      writer:
+        provider: claude_cli
+        skill_mount: instagram_writer
+        fallback:
+          - gemini_cli
+          - codex_cli
+      artist:
+        provider: codex_cli
+        skill_mount: instagram_artist
+        fallback:
+          - gemini_cli
+          - claude_cli
+    facebook:
+      writer:
+        provider: claude_cli
+        skill_mount: facebook_writer
+        fallback:
+          - gemini_cli
+          - codex_cli
+      artist:
+        provider: codex_cli
+        skill_mount: facebook_artist
+        fallback:
+          - gemini_cli
+          - claude_cli
 
 publish:
   mode: auto
