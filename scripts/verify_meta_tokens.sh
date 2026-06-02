@@ -16,11 +16,38 @@ check_token() {
     echo "FAIL: ${label} not set in .env" >&2
     return 1
   fi
-  local body http
-  body="$(curl -fsS "$url" 2>&1)" && http=200 || http=$?
-  if echo "$body" | grep -q '"error"'; then
-    local msg
-    msg="$(echo "$body" | python3 -c "import sys,json; d=json.load(sys.stdin); print((d.get('error') or {}).get('message','unknown'))" 2>/dev/null || echo "$body")"
+  local body ec
+  body="$(curl -sS --max-time 20 "$url" 2>&1)" || ec=$?
+  ec="${ec:-0}"
+  if [[ "$ec" -ne 0 ]]; then
+    echo "FAIL: ${label}: curl failed (${ec}): ${body}" >&2
+    return 1
+  fi
+
+  local parse status msg
+  parse="$(python3 -c '
+import json, sys
+raw = sys.stdin.read()
+try:
+    d = json.loads(raw)
+except json.JSONDecodeError:
+    print("PARSE_FAIL")
+    raise SystemExit(0)
+err = d.get("error")
+if err:
+    print("ERR")
+    print((err.get("message") or "unknown").replace("\n", " "))
+else:
+    print("OK")
+' <<<"$body")"
+  status="$(printf '%s\n' "$parse" | sed -n '1p')"
+  msg="$(printf '%s\n' "$parse" | sed -n '2p')"
+
+  if [[ "$status" == "PARSE_FAIL" ]]; then
+    echo "FAIL: ${label}: non-JSON response: ${body}" >&2
+    return 1
+  fi
+  if [[ "$status" == "ERR" ]]; then
     echo "FAIL: ${label}: ${msg}" >&2
     if echo "$msg" | grep -qi 'expired\|Session has expired\|code.: 190'; then
       echo "  → Refresh token: https://developers.facebook.com/tools/explorer/" >&2
@@ -55,7 +82,7 @@ if [[ -n "${IG_USER_ID:-}" && -n "${META_PAGE_ACCESS_TOKEN:-}" ]]; then
     "https://graph.facebook.com/${ver}/${IG_USER_ID}?fields=id,username&access_token=${META_PAGE_ACCESS_TOKEN}" \
     || errors=$((errors + 1))
   if [[ -n "${META_PAGE_ID:-}" ]]; then
-    linked="$(curl -fsS "https://graph.facebook.com/${ver}/${META_PAGE_ID}?fields=instagram_business_account&access_token=${META_PAGE_ACCESS_TOKEN}" 2>/dev/null \
+    linked="$(curl -fsS --max-time 20 "https://graph.facebook.com/${ver}/${META_PAGE_ID}?fields=instagram_business_account&access_token=${META_PAGE_ACCESS_TOKEN}" 2>/dev/null \
       | python3 -c "import sys,json; d=json.load(sys.stdin); print((d.get('instagram_business_account') or {}).get('id',''))" 2>/dev/null || true)"
     if [[ -n "$linked" && "$linked" != "$IG_USER_ID" ]]; then
       echo "WARN: IG_USER_ID ($IG_USER_ID) != Page linked account ($linked)" >&2
@@ -75,7 +102,7 @@ if command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' 2>/dev/n
 fi
 
 if [[ "$errors" -gt 0 ]]; then
-  python3 -c 'import json; print(json.dumps({"ok":false,"error":"meta token validation failed","count":'"$errors"'}))'
+  python3 -c 'import json; print(json.dumps({"ok":False,"error":"meta token validation failed","count":'"$errors"'}))'
   [[ "$STRICT" == "1" ]] && exit 1
   exit 0
 fi
