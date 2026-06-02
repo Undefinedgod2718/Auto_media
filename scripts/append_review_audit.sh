@@ -34,6 +34,43 @@ RUN_DIR="$(ensure_run_dir "$RUN_ID")"
 AUDIT_FILE="${RUN_DIR}/review_audit.jsonl"
 POST_FILE="${RUN_DIR}/post.md"
 SVG_FILE="${RUN_DIR}/art.svg"
+ASSESS_FILE="${RUN_DIR}/hermes_assessment.json"
+
+# B-prime: Gateway runs Hermes on host; n8n skips Parse Hermes assessment node.
+if [[ -z "$RISK_LEVEL" && -f "$ASSESS_FILE" ]]; then
+  _assess="$(python3 - "$ASSESS_FILE" <<'PY'
+import json, sys
+from pathlib import Path
+p = Path(sys.argv[1])
+try:
+    a = json.loads(p.read_text(encoding="utf-8"))
+except Exception:
+    print("|||")
+    raise SystemExit(0)
+reasons = a.get("reasons") or []
+suggestions = a.get("suggestions") or []
+if not isinstance(reasons, list):
+    reasons = [str(reasons)]
+if not isinstance(suggestions, list):
+    suggestions = [str(suggestions)]
+print("|".join([
+    str(a.get("risk_level") or ""),
+    json.dumps(reasons, ensure_ascii=False),
+    json.dumps(suggestions, ensure_ascii=False),
+]))
+PY
+)"
+  if [[ -n "$_assess" && "$_assess" != "|||" ]]; then
+    IFS='|' read -r _risk _reasons _suggestions <<< "$_assess"
+    [[ -z "$RISK_LEVEL" && -n "$_risk" ]] && RISK_LEVEL="$_risk"
+    [[ "$REASONS" == "[]" && -n "$_reasons" ]] && REASONS="$_reasons"
+    [[ "$SUGGESTIONS" == "[]" && -n "$_suggestions" ]] && SUGGESTIONS="$_suggestions"
+  fi
+fi
+
+if [[ "$HIGH_RISK_APPROVED" == "false" && "$DECISION" == "approve" && "$RISK_LEVEL" == "high" ]]; then
+  HIGH_RISK_APPROVED="true"
+fi
 
 python3 - "$AUDIT_FILE" "$POST_FILE" "$SVG_FILE" "$RUN_ID" "$ACTOR" "$DECISION" "$REVIEW_ROUND" "$RISK_LEVEL" "$REASONS" "$SUGGESTIONS" "$RERUN_SCOPE" "$HIGH_RISK_APPROVED" "$STOP_REASON" <<'PYCODE'
 import hashlib

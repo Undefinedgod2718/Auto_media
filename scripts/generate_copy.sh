@@ -8,4 +8,4 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ -n "$RUN_ID" ]] || { echo '{"ok":false,"error":"missing --run-id"}' >&2; exit 1; }
-exec "$(dirname "${BASH_SOURCE[0]}")/lib/invoke-engine.sh" --run-id "$RUN_ID" --engine copywriter
+exec /bin/bash "$(dirname "${BASH_SOURCE[0]}")/lib/invoke-engine.sh" --run-id "$RUN_ID" --engine copywriter

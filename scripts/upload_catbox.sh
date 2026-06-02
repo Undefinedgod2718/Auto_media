@@ -19,13 +19,19 @@ if [[ "${AUTO_MEDIA_MOCK:-0}" == "1" ]]; then
   exit 0
 fi
 
-PNG_PATH="/data/runs/${RUN_ID}/post.png"
-if [[ ! -f "$PNG_PATH" ]]; then
-  echo "{\"ok\":false,\"error\":\"post.png not found: ${PNG_PATH}\"}" >&2
+IMG_PATH=""
+for f in post.png post.jpg post.jpeg; do
+  if [[ -f "/data/runs/${RUN_ID}/${f}" ]]; then
+    IMG_PATH="/data/runs/${RUN_ID}/${f}"
+    break
+  fi
+done
+if [[ -z "$IMG_PATH" ]]; then
+  echo "{\"ok\":false,\"error\":\"post.png/jpg not found under /data/runs/${RUN_ID}\"}" >&2
   exit 1
 fi
 
-IMAGE_URL="$(curl -s -F "fileToUpload=@${PNG_PATH}" -F 'reqtype=fileupload' 'https://catbox.moe/user/api.php' | tr -d '\r')"
+IMAGE_URL="$(curl -s -F "fileToUpload=@${IMG_PATH}" -F 'reqtype=fileupload' 'https://catbox.moe/user/api.php' | tr -d '\r')"
 if [[ -z "$IMAGE_URL" || "${IMAGE_URL:0:4}" != "http" ]]; then
   echo "{\"ok\":false,\"error\":\"catbox invalid response: ${IMAGE_URL}\"}" >&2
   exit 1

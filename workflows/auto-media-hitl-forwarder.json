@@ -219,11 +219,8 @@
     },
     {
       "parameters": {
-        "method": "POST",
-        "url": "={{ ($env.WEBHOOK_URL || 'http://localhost:5678').replace(/\\/$/, '') + '/webhook-wait/auto-media-feedback-v1' }}",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ run_id: $json.run_id, feedback_text: $json.feedback_text, decision: $json.decision, stage: $json.stage }) }}",
+        "method": "GET",
+        "url": "={{ $json.resume_url }}",
         "options": {}
       },
       "id": "resume-feedback-v1",
@@ -278,6 +275,33 @@
       "position": [
         840,
         -280
+      ]
+    },
+    {
+      "parameters": {
+        "command": "=/bin/bash /data/scripts/read_hitl_resume_map.sh --run-id \"{{ $('Merge feedback payload').item.json.run_id }}\" --stage feedback-v1"
+      },
+      "id": "read-fb-resume-443972616910",
+      "name": "Read feedback resume map",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        1080,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const raw = $input.item.json.stdout || '{}';\nlet map;\ntry { map = JSON.parse(raw); } catch (e) { throw new Error('invalid feedback resume map: ' + raw); }\nconst fb = $('Merge feedback payload').item.json;\nif (!map.resume_url) throw new Error('resume_url missing');\nlet url = String(map.resume_url);\nurl = url.replace(/\\/(auto-media-[^/?&]+)$/, '');\nurl = url.replace(/(signature=[^&]+)\\/auto-media-[^&]+/, '$1');\nconst sep = url.indexOf('?') >= 0 ? '&' : '?';\nconst resume_url = url + sep\n  + 'feedback_text=' + encodeURIComponent(fb.feedback_text || '')\n  + '&decision=' + encodeURIComponent(fb.decision || 'revise')\n  + '&run_id=' + encodeURIComponent(fb.run_id || '')\n  + '&stage=' + encodeURIComponent(fb.stage || 'v1');\nreturn { json: { ...fb, resume_url } };"
+      },
+      "id": "parse-fb-resume-353e9fe418d6",
+      "name": "Parse feedback resume map",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        160
       ]
     }
   ],
@@ -389,7 +413,7 @@
       "main": [
         [
           {
-            "node": "Resume Wait feedback-v1",
+            "node": "Read feedback resume map",
             "type": "main",
             "index": 0
           }
@@ -412,6 +436,28 @@
         [
           {
             "node": "Resume Wait hitl-v1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read feedback resume map": {
+      "main": [
+        [
+          {
+            "node": "Parse feedback resume map",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse feedback resume map": {
+      "main": [
+        [
+          {
+            "node": "Resume Wait feedback-v1",
             "type": "main",
             "index": 0
           }

@@ -26,4 +26,4 @@ if [[ ! -f "${DEST}/.credentials.json" ]]; then
   exit 1
 fi
 
-echo '{"ok":true,"dest":"'"$DEST"'","hint":"docker compose restart n8n"}'
+echo '{"ok":true,"dest":"'"$DEST"'","hint":"docker compose restart n8n && ./scripts/inject_n8n_secrets.sh"}'

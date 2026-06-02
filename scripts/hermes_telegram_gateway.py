@@ -56,13 +56,221 @@ def log_gateway(event: str, direction: str, **fields: Any) -> None:
         f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+PLATFORM_KEYS = ("instagram", "threads", "facebook")
+PLATFORM_TOGGLE = {"ig": "instagram", "threads": "threads", "fb": "facebook"}
+PLATFORM_LABELS = {
+    "instagram": "Instagram",
+    "threads": "Threads",
+    "facebook": "Facebook",
+}
+
+
 def init_db() -> None:
     GATEWAY_DB.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(GATEWAY_DB) as conn:
         conn.execute(
             "CREATE TABLE IF NOT EXISTS processed_updates (update_id INTEGER PRIMARY KEY)"
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS pending_platform_select (
+                run_id TEXT PRIMARY KEY,
+                topic TEXT NOT NULL,
+                chat_id TEXT NOT NULL,
+                selected TEXT NOT NULL DEFAULT '',
+                message_id INTEGER,
+                created_at REAL NOT NULL
+            )
+            """
+        )
         conn.commit()
+
+
+def _platform_tips_text() -> str:
+    sys_path = str(REPO_ROOT / "scripts" / "lib")
+    if sys_path not in __import__("sys").path:
+        __import__("sys").path.insert(0, sys_path)
+    try:
+        from platform_tips import format_platform_tips
+
+        return format_platform_tips()
+    except (FileNotFoundError, json.JSONDecodeError, KeyError) as e:
+        LOG.warning("platform tips unavailable: %s", e)
+        return (
+            "請勾選發佈平台（IG / Threads / FB），再按「▶ 開始產出」。\n"
+            "僅 Threads 時不產輪播圖；含 IG 時才產 carousel。"
+        )
+
+
+def _parse_selected(raw: str) -> set[str]:
+    if not raw:
+        return set()
+    return {p.strip().lower() for p in raw.split(",") if p.strip()}
+
+
+def _save_pending(
+    run_id: str,
+    topic: str,
+    chat_id: str,
+    selected: set[str],
+    message_id: int | None = None,
+) -> None:
+    sel = ",".join(sorted(selected))
+    with sqlite3.connect(GATEWAY_DB) as conn:
+        conn.execute(
+            """
+            INSERT INTO pending_platform_select (run_id, topic, chat_id, selected, message_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(run_id) DO UPDATE SET
+                selected=excluded.selected,
+                message_id=COALESCE(excluded.message_id, pending_platform_select.message_id)
+            """,
+            (run_id, topic, chat_id, sel, message_id, time.time()),
+        )
+        conn.commit()
+
+
+def _load_pending(run_id: str) -> dict[str, Any] | None:
+    with sqlite3.connect(GATEWAY_DB) as conn:
+        row = conn.execute(
+            "SELECT run_id, topic, chat_id, selected, message_id FROM pending_platform_select WHERE run_id=?",
+            (run_id,),
+        ).fetchone()
+    if not row:
+        return None
+    return {
+        "run_id": row[0],
+        "topic": row[1],
+        "chat_id": row[2],
+        "selected": _parse_selected(row[3]),
+        "message_id": row[4],
+    }
+
+
+def _clear_pending(run_id: str) -> None:
+    with sqlite3.connect(GATEWAY_DB) as conn:
+        conn.execute("DELETE FROM pending_platform_select WHERE run_id=?", (run_id,))
+        conn.commit()
+
+
+def _platform_keyboard(run_id: str, selected: set[str]) -> dict:
+    def mark(key: str, label: str) -> str:
+        on = key in selected
+        return ("✓ " if on else "") + label
+
+    return {
+        "inline_keyboard": [
+            [
+                {"text": mark("instagram", "IG"), "callback_data": f"am:plat:toggle:ig:{run_id}"},
+                {"text": mark("threads", "Threads"), "callback_data": f"am:plat:toggle:threads:{run_id}"},
+                {"text": mark("facebook", "FB"), "callback_data": f"am:plat:toggle:fb:{run_id}"},
+            ],
+            [{"text": "▶ 開始產出", "callback_data": f"am:plat:confirm:{run_id}"}],
+        ]
+    }
+
+
+def send_platform_select(chat_id: str, run_id: str, topic: str, selected: set[str] | None = None) -> None:
+    sel = selected or set()
+    text = f"主題：{topic[:200]}\n\n{_platform_tips_text()}"
+    resp = telegram_api(
+        "sendMessage",
+        {
+            "chat_id": chat_id,
+            "text": text,
+            "reply_markup": _platform_keyboard(run_id, sel),
+        },
+    )
+    mid = (resp.get("result") or {}).get("message_id")
+    _save_pending(run_id, topic, chat_id, sel, int(mid) if mid else None)
+
+
+def _edit_platform_select(chat_id: str, message_id: int, run_id: str, topic: str, selected: set[str]) -> None:
+    text = f"主題：{topic[:200]}\n\n{_platform_tips_text()}"
+    telegram_api(
+        "editMessageText",
+        {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": text,
+            "reply_markup": _platform_keyboard(run_id, selected),
+        },
+    )
+
+
+def handle_platform_callback(update: dict) -> bool:
+    """Return True if handled (do not forward to n8n)."""
+    cb = update.get("callback_query") or {}
+    data = str(cb.get("data", ""))
+    if not data.startswith("am:plat:"):
+        return False
+
+    parts = data.split(":")
+    if len(parts) < 4:
+        return True
+
+    cq_id = cb.get("id", "")
+    msg = cb.get("message") or {}
+    chat_id = str((msg.get("chat") or {}).get("id", TELEGRAM_CHAT_ID))
+    message_id = int(msg.get("message_id", 0))
+
+    if parts[2] == "confirm":
+        run_id = parts[3]
+        pending = _load_pending(run_id)
+        if not pending:
+            telegram_api("answerCallbackQuery", {"callback_query_id": cq_id, "text": "已過期，請重新送主題"})
+            return True
+        selected = pending["selected"]
+        if not selected:
+            telegram_api("answerCallbackQuery", {"callback_query_id": cq_id, "text": "請至少選一個平台"})
+            return True
+        targets = ",".join(sorted(selected))
+        run_script(
+            "write_task.sh",
+            "--run-id",
+            run_id,
+            "--topic",
+            pending["topic"],
+            "--publish-targets",
+            targets,
+            "--publish-mode-threads",
+            "carousel",
+        )
+        _clear_pending(run_id)
+        trigger_n8n_run(run_id, pending["topic"], chat_id, targets)
+        telegram_api(
+            "answerCallbackQuery",
+            {"callback_query_id": cq_id, "text": f"已選：{targets}"},
+        )
+        telegram_api(
+            "sendMessage",
+            {
+                "chat_id": chat_id,
+                "text": f"已收到，生產中… run_id={run_id}\n發佈：{targets}",
+            },
+        )
+        return True
+
+    if parts[2] != "toggle" or len(parts) < 5:
+        return True
+
+    plat_key = parts[3]
+    run_id = parts[4]
+    platform = PLATFORM_TOGGLE.get(plat_key, plat_key)
+    pending = _load_pending(run_id)
+    if not pending:
+        telegram_api("answerCallbackQuery", {"callback_query_id": cq_id, "text": "已過期"})
+        return True
+    selected = set(pending["selected"])
+    if platform in selected:
+        selected.discard(platform)
+    else:
+        selected.add(platform)
+    _save_pending(run_id, pending["topic"], chat_id, selected, message_id)
+    if message_id:
+        _edit_platform_select(chat_id, message_id, run_id, pending["topic"], selected)
+    telegram_api("answerCallbackQuery", {"callback_query_id": cq_id, "text": PLATFORM_LABELS.get(platform, platform)})
+    return True
 
 
 def mark_update(update_id: int) -> bool:
@@ -137,52 +345,271 @@ def prereview_run(run_id: str) -> bool:
     return code == 0
 
 
-def build_caption(run_id: str) -> str:
+def _hermes_block(assessment: dict) -> str:
+    risk = assessment.get("risk_level", "low")
+    hint = assessment.get("verdict_hint", "pass")
+    reasons = assessment.get("reasons") or []
+    suggestions = assessment.get("suggestions") or []
+    if not isinstance(reasons, list):
+        reasons = [str(reasons)]
+    if not isinstance(suggestions, list):
+        suggestions = [str(suggestions)]
+    return (
+        f"\n\n[Hermes初審] risk={risk} | hint={hint}\n"
+        f"理由: {'；'.join(str(r) for r in reasons)}\n"
+        f"建議: {'；'.join(str(s) for s in suggestions)}"
+    )
+
+
+def build_caption(run_id: str, stage: str = "v1") -> str:
     post = DATA_ROOT / "runs" / run_id / "post.md"
-    assess = DATA_ROOT / "runs" / run_id / "hermes_assessment.json"
-    body = post.read_text(encoding="utf-8", errors="replace") if post.is_file() else ""
-    hint = ""
-    if assess.is_file():
+    assess_path = DATA_ROOT / "runs" / run_id / "hermes_assessment.json"
+    body = post.read_text(encoding="utf-8", errors="replace").strip() if post.is_file() else ""
+    hermes = ""
+    if assess_path.is_file():
         try:
-            a = json.loads(assess.read_text(encoding="utf-8"))
-            hint = f"\n[Hermes] risk={a.get('risk_level','low')} hint={a.get('verdict_hint','pass')}"
+            hermes = _hermes_block(json.loads(assess_path.read_text(encoding="utf-8")))
         except json.JSONDecodeError:
             pass
-    return (body[:900] + hint)[:1024]
+    prefix = "（修正後）\n" if stage == "v2" else ""
+    max_len = 1024
+    if not hermes:
+        return (prefix + body)[:max_len]
+    budget = max_len - len(prefix) - len(hermes)
+    if budget < 1:
+        return (prefix + hermes)[:max_len]
+    trimmed = body[:budget].rstrip()
+    if body and len(body) > budget:
+        trimmed = trimmed.rstrip() + "…"
+    return (prefix + trimmed + hermes)[:max_len]
+
+
+def _preview_keyboard(stage: str, run_id: str) -> dict:
+    return {
+        "inline_keyboard": [[
+            {"text": "✅", "callback_data": f"am:{stage}:approve:{run_id}"},
+            {"text": "🛠", "callback_data": f"am:{stage}:revise:{run_id}"},
+            {"text": "❌", "callback_data": f"am:{stage}:reject:{run_id}"},
+        ]]
+    }
+
+
+def _collect_carousel_images(run_id: str, limit: int = 10) -> list[Path]:
+    carousel = DATA_ROOT / "runs" / run_id / "carousel"
+    if not carousel.is_dir():
+        return []
+    slides = sorted(carousel.glob("*.png")) + sorted(carousel.glob("*.jpg"))
+    return slides[:limit]
+
+
+def _split_part1_posts(post_md: Path) -> list[str]:
+    import re
+
+    text = post_md.read_text(encoding="utf-8", errors="replace") if post_md.is_file() else ""
+    if re.search(r"##\s*Part\s*2", text, re.I):
+        text = re.split(r"\n##\s*Part\s*2", text, maxsplit=1, flags=re.I)[0]
+    posts = re.findall(
+        r"(###\s*貼文\s*\d+[^\n]*\n[\s\S]*?)(?=\n###\s*貼文\s*\d+|$)",
+        text,
+        flags=re.I,
+    )
+    if posts:
+        return [p.strip() for p in posts if p.strip()]
+    posts = re.findall(
+        r"(##\s*第\s*\d+\s*則[^\n]*\n[\s\S]*?)(?=\n##\s*第\s*\d+\s*則|$)",
+        text,
+    )
+    return [p.strip() for p in posts if p.strip()]
+
+
+def _short_album_caption(run_id: str, stage: str, slide_count: int) -> str:
+    prefix = "（修正後）\n" if stage == "v2" else ""
+    assess_path = DATA_ROOT / "runs" / run_id / "hermes_assessment.json"
+    hermes = ""
+    if assess_path.is_file():
+        try:
+            hermes = _hermes_block(json.loads(assess_path.read_text(encoding="utf-8")))
+        except json.JSONDecodeError:
+            pass
+    base = f"{prefix}run_id={run_id}\n共 {slide_count} 張輪播圖，全文見後續訊息。"
+    cap = (base + hermes)[:1024]
+    return cap
+
+
+def _multipart_send(method: str, fields: dict, file_field: str | None = None, file_path: Path | None = None) -> None:
+    boundary = "----automediagateway"
+    body: list[bytes] = []
+    for name, val in fields.items():
+        if val is None:
+            continue
+        part = (
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n"
+            f"{val}\r\n"
+        ).encode()
+        body.append(part)
+    if file_field and file_path and file_path.is_file():
+        mime = "image/jpeg" if file_path.suffix.lower() in (".jpg", ".jpeg") else "image/png"
+        head = (
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"{file_field}\"; "
+            f"filename=\"{file_path.name}\"\r\nContent-Type: {mime}\r\n\r\n"
+        ).encode()
+        body.append(head)
+        with file_path.open("rb") as f:
+            body.append(f.read())
+        body.append(f"\r\n--{boundary}--\r\n".encode())
+    else:
+        body.append(f"--{boundary}--\r\n".encode())
+    payload = b"".join(body)
+    req = urllib.request.Request(
+        f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/{method}",
+        data=payload,
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        method="POST",
+    )
+    urllib.request.urlopen(req, timeout=120)
+
+
+def send_preview_album(run_id: str, stage: str, keyboard: dict) -> int:
+    slides = _collect_carousel_images(run_id)
+    if not slides:
+        return 0
+    caption = _short_album_caption(run_id, stage, len(slides))
+    if len(slides) == 1:
+        _multipart_send(
+            "sendPhoto",
+            {"chat_id": TELEGRAM_CHAT_ID, "caption": caption, "reply_markup": json.dumps(keyboard)},
+            "photo",
+            slides[0],
+        )
+        return 1
+    media = []
+    for i, path in enumerate(slides):
+        item: dict[str, Any] = {"type": "photo", "media": f"attach://photo{i}"}
+        if i == 0:
+            item["caption"] = caption
+        media.append(item)
+    boundary = "----automediagateway"
+    parts: list[bytes] = []
+    parts.append(
+        (
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"chat_id\"\r\n\r\n"
+            f"{TELEGRAM_CHAT_ID}\r\n"
+        ).encode()
+    )
+    parts.append(
+        (
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"media\"\r\n\r\n"
+            f"{json.dumps(media, ensure_ascii=False)}\r\n"
+        ).encode()
+    )
+    for i, path in enumerate(slides):
+        mime = "image/jpeg" if path.suffix.lower() in (".jpg", ".jpeg") else "image/png"
+        parts.append(
+            (
+                f"--{boundary}\r\nContent-Disposition: form-data; name=\"photo{i}\"; "
+                f"filename=\"{path.name}\"\r\nContent-Type: {mime}\r\n\r\n"
+            ).encode()
+        )
+        with path.open("rb") as f:
+            parts.append(f.read())
+        parts.append(b"\r\n")
+    parts.append(f"--{boundary}--\r\n".encode())
+    payload = b"".join(parts)
+    req = urllib.request.Request(
+        f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMediaGroup",
+        data=payload,
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        method="POST",
+    )
+    urllib.request.urlopen(req, timeout=180)
+    return len(slides)
+
+
+def send_preview_copy(run_id: str, stage: str) -> None:
+    post = DATA_ROOT / "runs" / run_id / "post.md"
+    if not post.is_file():
+        return
+    posts = _split_part1_posts(post)
+    total = len(posts) or 1
+    for i, text in enumerate(posts or [post.read_text(encoding="utf-8", errors="replace")[:4000]], start=1):
+        header = f"貼文 {i}/{total}\n\n"
+        chunk = header + text
+        while chunk:
+            piece = chunk[:4096]
+            chunk = chunk[4096:]
+            telegram_api("sendMessage", {"chat_id": TELEGRAM_CHAT_ID, "text": piece})
+    doc_path = post
+    boundary = "----automediagateway"
+    with doc_path.open("rb") as f:
+        doc_bytes = f.read()
+    fields = {"chat_id": TELEGRAM_CHAT_ID}
+    fname = f"{run_id}-post.md"
+    parts: list[bytes] = []
+    for name, val in fields.items():
+        parts.append(
+            (
+                f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n"
+                f"{val}\r\n"
+            ).encode()
+        )
+    parts.append(
+        (
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"document\"; "
+            f"filename=\"{fname}\"\r\nContent-Type: text/markdown\r\n\r\n"
+        ).encode()
+    )
+    parts.append(doc_bytes)
+    parts.append(f"\r\n--{boundary}--\r\n".encode())
+    req = urllib.request.Request(
+        f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendDocument",
+        data=b"".join(parts),
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        method="POST",
+    )
+    urllib.request.urlopen(req, timeout=60)
+
+
+def _run_post_image(run_id: str) -> Path | None:
+    run_dir = DATA_ROOT / "runs" / run_id
+    carousel = run_dir / "carousel"
+    if carousel.is_dir():
+        for pattern in ("01.png", "01.jpg", "1.png"):
+            p = carousel / pattern
+            if p.is_file():
+                return p
+        slides = sorted(carousel.glob("*.png")) + sorted(carousel.glob("*.jpg"))
+        if slides:
+            return slides[0]
+    for name in ("post.png", "post.jpg", "post.jpeg"):
+        p = run_dir / name
+        if p.is_file():
+            return p
+    return None
 
 
 def send_preview(run_id: str, stage: str = "v1") -> None:
-    png = DATA_ROOT / "runs" / run_id / "post.png"
-    if not png.is_file():
-        telegram_api("sendMessage", {"chat_id": TELEGRAM_CHAT_ID, "text": f"run {run_id}: missing post.png"})
-        return
-    caption = build_caption(run_id)
-    keyboard = {
-        "inline_keyboard": [[
-            {"text": "Approve", "callback_data": f"am:{stage}:approve:{run_id}"},
-            {"text": "Revise", "callback_data": f"am:{stage}:revise:{run_id}"},
-            {"text": "Reject", "callback_data": f"am:{stage}:reject:{run_id}"},
-        ]]
-    }
-    with png.open("rb") as f:
-        import mimetypes
-        boundary = "----automediagateway"
-        body = []
-        for field, val in [("chat_id", TELEGRAM_CHAT_ID), ("caption", caption), ("reply_markup", json.dumps(keyboard))]:
-            body.append(f"--{boundary}\r\nContent-Disposition: form-data; name=\"{field}\"\r\n\r\n{val}\r\n")
-        body.append(
-            f"--{boundary}\r\nContent-Disposition: form-data; name=\"photo\"; filename=\"post.png\"\r\n"
-            f"Content-Type: image/png\r\n\r\n"
+    keyboard = _preview_keyboard(stage, run_id)
+    album_n = send_preview_album(run_id, stage, keyboard)
+    send_preview_copy(run_id, stage)
+    if album_n == 0:
+        telegram_api(
+            "sendMessage",
+            {
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": f"（本 run 未產輪播圖，僅文字預覽）run_id={run_id}",
+            },
         )
-        tail = f"\r\n--{boundary}--\r\n"
-        payload = "".join(body).encode() + f.read() + tail.encode()
-        req = urllib.request.Request(
-            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto",
-            data=payload,
-            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
-            method="POST",
-        )
-        urllib.request.urlopen(req, timeout=60)
+    telegram_api(
+        "sendMessage",
+        {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": (
+                f"審閱 run_id={run_id}（{stage}）— "
+                + ("請確認上方輪播與全文後選擇：" if album_n else "請確認上方全文後選擇：")
+            ),
+            "reply_markup": keyboard,
+        },
+    )
 
 
 def abort_pre_wait(execution_id: str, run_id: str, reason: str) -> None:
@@ -198,11 +625,23 @@ def abort_pre_wait(execution_id: str, run_id: str, reason: str) -> None:
         map_file.unlink()
 
 
+def _n8n_resume_url(url: str) -> str:
+    """Rewrite localhost resume URLs so gateway container can reach n8n."""
+    if not url:
+        return url
+    # n8n often emits http://localhost:5678/webhook-waiting/...
+    for bad in ("http://localhost:5678", "http://127.0.0.1:5678"):
+        if url.startswith(bad):
+            base = os.environ.get("N8N_API_URL", "http://n8n:5678").rstrip("/")
+            return base + url[len(bad) :]
+    return url
+
+
 def abort_post_wait(run_id: str, stage: str, reason: str) -> None:
     map_file = DATA_ROOT / "hitl" / "resume_map" / f"{run_id}-{stage}.json"
     if map_file.is_file():
         m = json.loads(map_file.read_text(encoding="utf-8"))
-        url = str(m.get("resume_url", ""))
+        url = _n8n_resume_url(str(m.get("resume_url", "")))
         if url:
             sep = "&" if "?" in url else "?"
             http_json("GET", f"{url}{sep}callback=reject&run_id={urllib.parse.quote(run_id)}&stage={stage}")
@@ -218,13 +657,45 @@ def abort_post_wait(run_id: str, stage: str, reason: str) -> None:
     )
 
 
+def _route_user_text(text: str) -> str:
+    t = text.strip()
+    if t in ("/用量", "/usage", "用量查詢", "用量查询"):
+        return "usage_query"
+    if t.startswith("/"):
+        return "unknown_command"
+    return "topic_start"
+
+
 def forward_to_n8n(update: dict) -> None:
     url = f"{N8N_API_URL}/webhook/auto-media-telegram-in"
     http_json("POST", url, update)
 
 
-def trigger_n8n_run(run_id: str, topic: str, chat_id: str) -> None:
-    body = {"run_id": run_id, "topic": topic, "chat_id": chat_id, "audience": "general"}
+def send_hermes_plan(run_id: str, chat_id: str) -> None:
+    plan_path = DATA_ROOT / "runs" / run_id / "hermes_plan.json"
+    if not plan_path.is_file():
+        return
+    try:
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return
+    sys_path = str(REPO_ROOT / "scripts" / "lib")
+    if sys_path not in __import__("sys").path:
+        __import__("sys").path.insert(0, sys_path)
+    from hermes_content_review import format_telegram
+
+    telegram_api("sendMessage", {"chat_id": chat_id, "text": format_telegram(plan)[:4096]})
+
+
+def trigger_n8n_run(run_id: str, topic: str, chat_id: str, publish_targets: str = "") -> None:
+    body: dict[str, Any] = {
+        "run_id": run_id,
+        "topic": topic,
+        "chat_id": chat_id,
+        "audience": "general",
+    }
+    if publish_targets:
+        body["publish_targets"] = publish_targets
     http_json("POST", f"{N8N_API_URL}{N8N_WEBHOOK_RUN}", body)
 
 
@@ -243,14 +714,17 @@ def worker_loop() -> None:
                 forward_to_n8n(job["update"])
             elif jt == "topic_start":
                 run_id = job["run_id"]
-                run_script("write_task.sh", "--run-id", run_id, "--topic", job["topic"])
-                trigger_n8n_run(run_id, job["topic"], job.get("chat_id", ""))
-                telegram_api("sendMessage", {"chat_id": job.get("chat_id", TELEGRAM_CHAT_ID), "text": f"已收到，生產中… run_id={run_id}"})
+                chat_id = job.get("chat_id", TELEGRAM_CHAT_ID)
+                send_platform_select(chat_id, run_id, job["topic"])
+            elif jt == "platform_callback":
+                handle_platform_callback(job["update"])
             elif jt == "schedule_prereview":
                 eid = job["execution_id"]
                 run_id = job["run_id"]
                 state = poll_execution_ready(eid)
                 if state == "waiting":
+                    run_script("hermes_content_review.sh", "--run-id", run_id)
+                    send_hermes_plan(run_id, TELEGRAM_CHAT_ID)
                     if prereview_run(run_id):
                         send_preview(run_id, job.get("stage", "v1"))
                     else:
@@ -267,6 +741,16 @@ def worker_loop() -> None:
                     abort_pre_wait(job.get("execution_id", ""), job["run_id"], job.get("reason", ""))
             elif jt == "notify":
                 telegram_api("sendMessage", {"chat_id": job.get("chat_id", TELEGRAM_CHAT_ID), "text": job["text"]})
+            elif jt == "usage_query":
+                sys_path = str(REPO_ROOT / "scripts" / "lib")
+                if sys_path not in __import__("sys").path:
+                    __import__("sys").path.insert(0, sys_path)
+                from usage_query import handle_usage_query
+
+                telegram_api(
+                    "sendMessage",
+                    {"chat_id": job.get("chat_id", TELEGRAM_CHAT_ID), "text": handle_usage_query()},
+                )
             log_gateway(jt, "out", job_type=jt, run_id=job.get("run_id", ""), latency_ms=int((time.time() - t0) * 1000), ok=True)
         except Exception as e:
             LOG.exception("job %s failed", jt)
@@ -303,6 +787,13 @@ class GatewayHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
+    def do_GET(self) -> None:
+        path = self.path.split("?", 1)[0]
+        if path in ("/", "/healthz"):
+            self._json_response(200, {"ok": True, "service": "hermes-gateway"})
+            return
+        self._json_response(404, {"ok": False, "error": "not found"})
+
     def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(length) if length else b"{}"
@@ -326,16 +817,32 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 return
             log_gateway("telegram_update", "in", update_id=uid)
             if update.get("callback_query"):
-                JOB_QUEUE.put({"job_type": "telegram_callback", "update": update})
+                data = str((update.get("callback_query") or {}).get("data", ""))
+                if data.startswith("am:plat:"):
+                    JOB_QUEUE.put({"job_type": "platform_callback", "update": update})
+                else:
+                    JOB_QUEUE.put({"job_type": "telegram_callback", "update": update})
             elif update.get("message", {}).get("reply_to_message"):
                 JOB_QUEUE.put({"job_type": "telegram_feedback", "update": update})
             elif update.get("message", {}).get("text"):
                 text = update["message"]["text"].strip()
-                if text and not text.startswith("/"):
-                    import uuid
-                    run_id = time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8]
+                if not text:
+                    pass
+                else:
                     chat_id = str(update["message"]["chat"]["id"])
-                    JOB_QUEUE.put({"job_type": "topic_start", "run_id": run_id, "topic": text, "chat_id": chat_id})
+                    route = _route_user_text(text)
+                    if route == "usage_query":
+                        JOB_QUEUE.put({"job_type": "usage_query", "chat_id": chat_id})
+                    elif route == "unknown_command":
+                        telegram_api(
+                            "sendMessage",
+                            {"chat_id": chat_id, "text": "未知指令。輸入主題文字開始產文，或傳送「用量查詢」。"},
+                        )
+                    else:
+                        import uuid
+
+                        run_id = time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8]
+                        JOB_QUEUE.put({"job_type": "topic_start", "run_id": run_id, "topic": text, "chat_id": chat_id})
             self._json_response(200, {"ok": True})
             return
 

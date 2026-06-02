@@ -2,6 +2,172 @@
 
 在 **n8n 網頁介面** 建立自動發文流程，無需匯入 JSON 檔。
 
+---
+
+## PR-0：Wait 語意探測（所有 HITL 工作的前置條件）
+
+> **PR-0 必須在建立主流程之前完成。** Wait 節點若不能真正暫停執行，整個 HITL 架構就不成立。本節告訴你怎麼用 `verify-wait-probe` workflow 取得 Q1–Q4 四個地基性答案。
+
+### 建立 n8n API Key
+
+1. n8n UI 右上角頭像 → **Settings** → **n8n API** → **Create an API key**。
+2. 複製金鑰，儲存到 `.env`：
+   ```
+   N8N_API_KEY=<your_key>
+   ```
+3. 驗證：
+   ```bash
+   curl -s -H "X-N8N-API-KEY: $N8N_API_KEY" \
+     http://localhost:5678/api/v1/workflows | jq '.data | length'
+   ```
+   期望：回傳數字（≥0），不是 401。
+
+### 匯入並啟用 verify-wait-probe
+
+1. n8n UI → **Workflows** → **Import from file**。
+2. 選 `workflows/verify-wait-probe.json`。
+3. 匯入後確認 workflow 名稱為 `verify-wait-probe`。
+4. 右上角開關 → **Active**（必須 Active 才能接 webhook，不要只按 Execute）。
+
+### 執行探測
+
+探測分兩個 curl：第一個觸發並取得 execution_id，第二個 resume 並觀察。
+
+**Step A — 觸發（在 devcontainer / Linux shell）：**
+
+```bash
+PROBE_ID="pr0-$(date +%s)"
+
+# 觸發 webhook，立即返回（不等）
+TRIGGER_RESP=$(curl -s -X POST \
+  "http://localhost:5678/webhook/verify-wait-probe" \
+  -H "Content-Type: application/json" \
+  -d "{\"probe_id\": \"${PROBE_ID}\"}")
+
+echo "trigger response: $TRIGGER_RESP"
+
+# 稍等 1 秒讓 n8n 建立 execution
+sleep 1
+
+# 取得最新 execution id
+EXEC_ID=$(curl -s \
+  -H "X-N8N-API-KEY: $N8N_API_KEY" \
+  "http://localhost:5678/api/v1/executions?workflowId=verify-wait-probe&limit=1" \
+  | jq -r '.data[0].id')
+
+echo "execution_id: $EXEC_ID"
+
+# 查詢狀態（Q1）
+STATUS=$(curl -s \
+  -H "X-N8N-API-KEY: $N8N_API_KEY" \
+  "http://localhost:5678/api/v1/executions/${EXEC_ID}" \
+  | jq -r '.data.status')
+
+echo "Q1 status after trigger: $STATUS"
+```
+
+**期望 Q1**：`status` 應為 `waiting`（而非 `running` 或 `success`）。
+
+**Step B — Resume（確認 callback 傳遞，Q2/Q3）：**
+
+```bash
+# Resume：POST 到靜態 webhook-wait 路徑（Q2 驗證）
+RESUME_RESP=$(curl -s -X POST \
+  "http://localhost:5678/webhook-wait/verify-wait-probe-wait" \
+  -H "Content-Type: application/json" \
+  -d "{\"callback\": \"approve\", \"probe_id\": \"${PROBE_ID}\"}")
+
+echo "resume response: $RESUME_RESP"
+
+sleep 1
+
+# 取得完整 execution 資料（Q3）
+EXEC_DATA=$(curl -s \
+  -H "X-N8N-API-KEY: $N8N_API_KEY" \
+  "http://localhost:5678/api/v1/executions/${EXEC_ID}")
+
+FINAL_STATUS=$(echo "$EXEC_DATA" | jq -r '.data.status')
+RESUMED=$(echo "$EXEC_DATA" | jq -r '.data.data.resultData.runData["After wait"][0].data.main[0][0].json.resumed // "missing"')
+PAYLOAD_CALLBACK=$(echo "$EXEC_DATA" | jq -r '.data.data.resultData.runData["After wait"][0].data.main[0][0].json.payload.body.callback // "missing"')
+
+echo "Q2 resume status: $FINAL_STATUS"
+echo "Q3 resumed flag: $RESUMED"
+echo "Q3 payload.callback: $PAYLOAD_CALLBACK"
+```
+
+**Step C — Timeout（Q4）：**
+
+不 resume，讓 Wait 自行超時（10 秒）：
+
+```bash
+PROBE_ID2="pr0-timeout-$(date +%s)"
+
+curl -s -X POST \
+  "http://localhost:5678/webhook/verify-wait-probe" \
+  -H "Content-Type: application/json" \
+  -d "{\"probe_id\": \"${PROBE_ID2}\"}" > /dev/null
+
+echo "Waiting 15 seconds for timeout..."
+sleep 15
+
+EXEC_ID2=$(curl -s \
+  -H "X-N8N-API-KEY: $N8N_API_KEY" \
+  "http://localhost:5678/api/v1/executions?workflowId=verify-wait-probe&limit=1" \
+  | jq -r '.data[0].id')
+
+Q4_STATUS=$(curl -s \
+  -H "X-N8N-API-KEY: $N8N_API_KEY" \
+  "http://localhost:5678/api/v1/executions/${EXEC_ID2}" \
+  | jq -r '.data.status')
+
+echo "Q4 timeout status: $Q4_STATUS"
+```
+
+### Q1–Q4 判讀表
+
+| 問題 | 欄位 | passed 條件 | passed:false 含義 |
+|------|------|------------|-------------------|
+| **Q1** `waiting_observed` | Step A 的 `status` | `== "waiting"` | Wait 節點在此 n8n 版本不真正暫停；HITL 前提崩潰，**停止所有後續工作** |
+| **Q2** `resume_url_works` | Step B 的 `FINAL_STATUS` | `== "success"` | 靜態 `/webhook-wait/<webhookId>` 路徑失效；需改用 `$execution.resumeUrl` 動態路徑 |
+| **Q3** `callback_in_body` | Step B 的 `payload.callback` | `== "approve"` | resume payload 沒有出現在 `$json.body`；Switch callback 條件需調整到 `$json.callback` |
+| **Q4** `timeout_fires` | Step C 的 `Q4_STATUS` | `== "success"` | limitWaitTime 無效；TTL 保護不可靠，需另設外部監控 |
+
+> **絕對禁止造假**：`passed:false` 是真實語意，不是測試失敗。它告訴你 1802 行 workflow 哪些假設不成立。若 Q1=false 整個 HITL 設計需重來。
+
+### 把結果填入 n8n_semantics.json
+
+探測完畢後，將四個答案填入專案根目錄的 `n8n_semantics.json`：
+
+```json
+{
+  "probe_run_id": "<EXEC_ID>",
+  "timestamp": "<ISO8601>",
+  "Q1_waiting_observed": {
+    "question": "執行到 Wait 節點後，execution status 是否變為 waiting？",
+    "passed": true,
+    "evidence": "status=waiting, exec_id=35"
+  },
+  "Q2_resume_url_works": {
+    "question": "POST /webhook-wait/<webhookId> 能否成功 resume Wait？",
+    "passed": true,
+    "evidence": "final_status=success after resume",
+    "url_used": "http://localhost:5678/webhook-wait/verify-wait-probe-wait"
+  },
+  "Q3_callback_in_body": {
+    "question": "Resume POST payload 是否出現在 Wait 之後的 $json.body？",
+    "passed": true,
+    "evidence": "payload.body.callback=approve"
+  },
+  "Q4_timeout_fires": {
+    "question": "limitWaitTime=true 時，10 秒後 Wait 是否自動往下走（status=success）？",
+    "passed": true,
+    "evidence": "status=success after 15s wait"
+  }
+}
+```
+
+---
+
 ## 給 PM/營運的簡版流程
 
 這條流程可以理解成「先自動產出，再雙層審查，最後才發佈」：
@@ -56,7 +222,7 @@ docker compose up -d
 
 ```text
 Schedule → Load runtime（可選）→ Set 變數 → Write TASK
-    → Invoke 文案 + Invoke 圖（平行）→ Render PNG
+    → Invoke 文案 + Invoke image（平行，直接 post.png）
     → 讀 PNG + 讀 MD → Telegram 預覽 → 等待審核 → 分支
     → 核准 → Meta 發文；失敗 → 寫 api_dead.json
 ```
@@ -93,11 +259,13 @@ cat /data/config/platform.runtime.json
 - 新增三個欄位（Mode: Manual Mapping）：
 
 
-| 欄位名        | 類型     | 值                                                           |
-| ---------- | ------ | ----------------------------------------------------------- |
-| `run_id`   | String | `={{ $now.format('yyyyMMdd-HHmmss') }}-{{ $execution.id }}` |
-| `topic`    | String | `AI 發展趨勢`（可改成你的主題）                                          |
-| `audience` | String | `25-35 歲科技愛好者`                                              |
+| 欄位名        | 類型     | 值                                                                 |
+| ---------- | ------ | ----------------------------------------------------------------- |
+| `run_id`   | String | `={{ $('Webhook Run').item.json.body?.run_id \|\| $now.format('yyyyMMdd-HHmmss') + '-' + $execution.id }}` |
+| `topic`    | String | `={{ $('Webhook Run').item.json.body?.topic \|\| 'AI 發展趨勢' }}` |
+| `audience` | String | `={{ $('Webhook Run').item.json.body?.audience \|\| '25-35 歲科技愛好者' }}` |
+
+上游為 `Load platform.runtime.json` 時，不可使用 `$json.body`（會拿不到 Gateway 傳入的 `run_id`/`topic`）。
 
 
 ---
@@ -355,80 +523,93 @@ bash scripts/check_telegram_hitl.sh     # 診斷 Wait / forwarder / Telegram
 
 當 `features.hermes_gateway: true` 且已執行 `amctl apply`：
 
-1. **主題入口**：Telegram 文字 → Gateway → `POST /webhook/auto-media-run`（body: `run_id`, `topic`, `chat_id`）。
-2. **產線後 HITL**：`Render PNG` → **Save wait resume URL** → **Schedule Gateway prereview**（`GATEWAY_URL/internal/schedule-prereview`，只等 200）→ **Wait for approval (stage1)**。
-3. **預覽**：Gateway worker 輪詢 `GET /api/v1/executions/{execution_id}`，僅在 `status=waiting` 後初審並 `sendPhoto`（非 n8n Telegram 節點）。
-4. **Forwarder**：`Read wait resume map` → `Parse wait resume map` → **GET** `$execution.resumeUrl`（勿用靜態 `/webhook-wait/...`）。
-5. **Reject**：Switch 第三出口 → `Notify run rejected`（不進 Force Reply）。
-6. **TTL**：Wait 後 **Check resume type** — 無 callback 視為超時。
-7. **PR-0**：`bash scripts/verify_n8n_hitl_semantics.sh`（需 n8n 運行）；`bash scripts/inventory_repo.sh` 產出 ground truth。
+1. **主題入口**：Telegram 文字 → Gateway **平台多選**（IG/Threads/FB）→ 確認後 `POST /webhook/auto-media-run`（body 含 `publish_targets`）。診斷：`bash scripts/verify_gateway_platform_flow.sh`。
+2. **產線後 HITL（stage1）**：`Render PNG` → **Save wait resume URL (stage1)** → **Schedule Gateway prereview (stage1)** → **Wait for approval (stage1)**。
+3. **Revise 後 HITL（stage2）**：`Rerun render PNG` → **Save wait resume URL (stage2)** → **Schedule Gateway prereview (stage2)** → **Wait for approval (stage2)**。
+4. **預覽（Gateway 獨佔）**：`hermes_telegram_gateway.py` 在 `waiting` 後執行 `hermes_prereview.sh`，再送 **`sendMediaGroup`（最多 10 張輪播圖）**、Part 1 五則 `sendMessage`、以及 `post.md` 全文 `sendDocument`；審核按鈕附在最後一則文字。workflow 內 **`Telegram HITL preview` / `(stage2)` 必須 `disabled: true`**。
+5. **資料目錄**：`docker compose up -d n8n gateway` — **Gateway 與 n8n 共用** `./data/runs`、`./data/hitl`、`./data/logs`。`.env` 設 `N8N_GATEWAY_URL=http://gateway:8787`。勿僅在宿主跑 Gateway。若曾用 named volume `n8n_runs`，複製至 `./data/runs` 後再 up。
+6. **Forwarder**：`Read wait resume map` → `Parse wait resume map` → **GET** `$execution.resumeUrl`（勿用靜態 `/webhook-wait/...`）。
+7. **Reject**：Switch 第三出口 → `Notify run rejected`（不進 Force Reply）。
+8. **TTL**：Wait 後 **Check resume type** — 無 callback 視為超時。
+9. **驗證**：`VERIFY_CLAUDE_STRICT=1 bash scripts/verify_n8n_claude_engine.sh`；`bash scripts/verify_workflow_live_parity.sh`；`bash scripts/verify_gateway_exclusive_preview.sh`；`bash scripts/verify_runs_mount_parity.sh <run_id>`；`bash scripts/enforce_telegram_gateway.sh`。
+10. **同步 live workflow**（Dev Container）：`.env` 設 `N8N_SYNC_API_URL=http://host.docker.internal:5678`，執行 `python3 scripts/sync_workflow_to_n8n.py`；記錄見 `data/logs/verify_exec85_followup.json`。
+
+---
+
+## Instagram 發佈設定（Page + Graph API）
+
+1. **IG 帳號綁 Page**：IG App → Business/Creator；FB Page → Settings → Linked accounts → Instagram。
+2. **Token scopes**（Graph Explorer → Page Access Token）：`instagram_basic`、`instagram_content_publish`、`pages_show_list`、`pages_read_engagement`。
+3. **取得 `IG_USER_ID`**：
+   ```bash
+   curl -s "https://graph.facebook.com/v21.0/${META_PAGE_ID}?fields=instagram_business_account&access_token=${META_PAGE_ACCESS_TOKEN}"
+   ```
+   將回傳的 `instagram_business_account.id` 寫入 `.env` 的 `IG_USER_ID`。
+4. **Long-lived Page token**：與 FB 相同流程換長效 token，存於 `META_PAGE_ACCESS_TOKEN`。
+5. **驗證**：`bash scripts/verify_meta_tokens.sh` → `docker compose up -d n8n`。
+
+**注意**：圖片 URL 須公開 HTTPS（不可用 localhost）；container 建立後請盡快 publish；IG 約 **25 篇/日** 上限。
+
+核准後發佈為 **env-gated fan-out**：`META_PAGE_ID` → FB `/photos`；`THREADS_USER_ID` → Threads chain；`IG_USER_ID` → IG carousel。共用 `upload_carousel_catbox.sh` 的 URL。
 
 ---
 
 ## 常見問題
 
-
-| 現象                          | 處理方式                                                           |
-| --------------------------- | -------------------------------------------------------------- |
+| 現象 | 處理方式 |
+|------|----------|
 | Execute Command 失敗、`bash\r` | 腳本需為 Unix 換行（LF）；請技術人員在 Linux/Dev Container 內儲存 `scripts/*.sh` |
-| 找不到 `/data/scripts`         | 確認 `docker compose` 有掛載 `./scripts`（見 `docker-compose.yml`）    |
-| Telegram 沒收到圖               | 檢查 Bot Token、Chat ID、是否曾對 Bot 按過 Start                         |
-| 文案/圖產不出                     | 容器內 CLI 未登入；開發用可設 `AUTO_MEDIA_MOCK=1` 做假資料測試                   |
-| Meta 發文 403                 | 檢查 Page Token 權限與 `.env` 變數                                    |
-| 按 Approve 沒反應               | 見上方「正式路徑」三項；確認 forwarder Active、主流程在 `waiting` 狀態 |
-| Wait resume 404               | 勿用靜態 `/webhook-wait/...`；用執行期 `$execution.resumeUrl` + GET |
+| 找不到 `/data/scripts` | 腳本在 **image build** 時 COPY 進容器；新增腳本後需 `docker compose build n8n && docker compose up -d n8n`，或執行 `bash scripts/sync_scripts_to_n8n.sh` |
+| `sync_carousel_total.sh: No such file` | 同上；workflow 已接 Carousel 但容器映像未更新 |
+| `prereview failed` | Gateway 與 n8n 未共用 runs：改 `docker compose up -d gateway`，勿 `GATEWAY_RUN_MODE=host` |
+| Telegram 有圖無文案 | 確認 gateway 容器內 `/data/runs/<run_id>/post.md` 存在；`verify_runs_mount_parity.sh` |
+| 文案總是 Gemini | `verify_n8n_claude_engine.sh`；`sync_claude_oauth.sh` + `inject_n8n_secrets.sh`；查 `data/logs/engine_failover.jsonl` |
+| Telegram 沒收到圖 | 檢查 Bot Token、Chat ID、是否曾對 Bot 按過 Start |
+| 預覽出現兩次 | 執行 `enforce_telegram_gateway.sh`；確認 `Telegram HITL preview` 節點為 disabled |
+| 文案/圖產不出 | 容器內 CLI 未登入；開發用可設 `AUTO_MEDIA_MOCK=1` 做假資料測試 |
+| Meta 發文 403 | 檢查 Page Token 權限與 `.env` 變數 |
+| Threads `OAuthException` code 190 / Session has expired | `THREADS_ACCESS_TOKEN` 已過期。至 [Graph API Explorer](https://developers.facebook.com/tools/explorer/) 重新產生 User Token（需 `threads_basic`、`threads_content_publish` 等權限），更新 `.env` 後 `docker compose restart n8n`，執行 `bash scripts/verify_meta_tokens.sh` |
+| Threads `THApiException` / `text` at most 500 characters | **Publish Threads chain** 預設 `--mode by_post`：每個 `### 貼文 N` 為一則（≤500 字），共 5 則串文；首則 `IMAGE`+圖，後續 `TEXT`+`reply_to_id`。乾跑：`bash scripts/verify_threads_publish.sh --run-id <id>`。 |
+| n8n 顯示 Success 但沒發文 | 舊版 Publish 節點設了 `continueOnFail`；請 `python3 scripts/patch_bprime_workflows.py` 並 sync。核准後以 **`finalize_publish_gate.sh`** 讀 `publish_*.json`，任一本該發的平台失敗則 workflow **Error**。 |
+| IG 只有 1 張 / caption 很短 | `carousel/` 少於 2 張時 **`upload_carousel_catbox.sh` 會 exit 1**（不再 fallback 單張 `post.png`）。產圖前 **`validate_post_md.sh`** 與 **`generate_carousel_images.sh`**（≥80% 張數且 ≥2）會擋下短稿。 |
+| Telegram 只看到一張圖、文案被截斷 | 請重建 **gateway** 映像；舊版僅 `sendPhoto` + 1024 字 caption。 |
+| `post.md` 驗證失敗 | **Validate post.md** 僅檢 **上限**（每則 ≤500、Caption ≤2200、輪播張數等），依 `TASK.md` 的 `publish_targets` 跳過未選平台；**不**再強制 5 則或最低字數。 |
+| 圖片產物 | **僅當 TASK 含 `instagram`**：`IF Should generate carousel` → **Invoke carousel images**（張數由 `post.md` 總頁數經 sync 寫入 `carousel_total`）。**僅 Threads** 時跳過產圖（`carousel_total: 0`），Threads 發佈可走純 TEXT 串文。 |
+| Telegram 無平台按鈕、立刻「生產中」 | Gateway 未更新或未走 `/telegram`：重啟 gateway；確認 `GATEWAY_URL`；新流程確認後應含「發佈：…」 |
+| IG 發佈 403 | Page Token 需含 `instagram_basic`、`instagram_content_publish`；`.env` 設 `IG_USER_ID`（見下方 IG 設定）。圖片須為 **公開 HTTPS**（`upload_carousel_catbox.sh` → catbox）。 |
+| IG Carousel | 核准後 **IF `IG_USER_ID`** → `publish_ig_carousel.sh`（子 container → `media_type=CAROUSEL` → `media_publish`）。與 FB Page、Threads **並行**，未設 env 則 skip。 |
+| 按 Approve 沒反應 | 見上方「正式路徑」三項；確認 forwarder Active、主流程在 `waiting` 狀態 |
+| Wait resume 404 | 勿用靜態 `/webhook-wait/...`；用執行期 `$execution.resumeUrl` + GET |
 
+---
+
+## 平台規則關卡（IG / Threads / Facebook）
+
+規則常數：[`data/config/platform_limits.json`](../data/config/platform_limits.json)。檢查腳本：[`check_platform_limits.sh`](../scripts/check_platform_limits.sh)。
+
+| 平台 | 規則 | 檢查時機 |
+|------|------|----------|
+| Instagram | 輪播 **2–10** 張；Caption ≤2200 字；Hashtag ≤30；圖 JPEG/PNG ≤8MB；24h API 發文 ≤25 篇 | 內容：`pre_hitl`；用量：`pre_publish` |
+| Threads | 每則 ≤500 字（建議 ~450 斷句）；**輪播 API 最多 20** 媒體；非輪播 1 圖；JPEG/PNG ≤8MB；24h ≤250、1h ≤200 | 內容：`pre_hitl`；用量：`pre_publish` |
+| Facebook | 訊息 ≤63206 字元 | `pre_hitl` / 發佈腳本 |
+
+**IG 10 vs Threads 20**：產圖與 Hermes 審閱以 **共用一套圖** 為準，張數上限 = `min(規劃值, 10, 20)`；IG 輪播 API 硬上限 10。Threads **Phase 1** 發佈仍用 [`publish_threads_chain.sh`](../scripts/publish_threads_chain.sh)（首則 1 圖 + TEXT 串文）；**Phase 2** 才接 [`publish_threads_carousel.sh`](../scripts/publish_threads_carousel.sh)（`media_type=CAROUSEL`，≤20 媒體）。
+
+Workflow 節點：`Validate post.md` → **Check platform limits (pre-HITL)** → **IF Should generate carousel** →（是）Sync + Invoke carousel /（否）直達 Hermes review；核准後 **Check platform limits (pre-publish)** → 上傳／發佈。
+
+滾動用量帳本：`data/hitl/publish_quota.jsonl`（成功發佈後由 `record_publish_quota.sh` 記帳）。
+
+**Telegram 指令**
+
+| 指令 | 行為 |
+|------|------|
+| `/用量`、`用量查詢` | 回覆「功能開發中」（stub，尚未查剩餘額度） |
+| 一般文字 | 主題 → **多選** IG / Threads / Facebook（至少一項）→「開始產出」才觸發 n8n |
+
+Threads 動態 API 額度（約 \(4800 \times\) 曝光）目前僅文件註記；Graph rate limit 仍由發佈腳本錯誤轉述至 Telegram。
 
 ---
 
 ## 進階（工程師）
 
 `[workflows/auto-media-happy-path.json](../workflows/auto-media-happy-path.json)` 為同一流程的 **匯出備份**，僅供版本對照或還原，**一般操作請以本手冊在網頁建立為準**。
-
----
-
-## PR-0：實機驗證 n8n HITL 語意（前置步驟）
-
-`scripts/verify_n8n_hitl_semantics.sh` 用實機探測四個 HITL 行為（Q1–Q4），**結果決定 1802 行 workflow 改動是否站得住**。跑此腳本前，必須先把探測 workflow 匯入並啟用。
-
-> **前提**：只能在跑得起 n8n 2.21.x 的環境執行（Dev Container / Linux host）。Windows 本機無 n8n，無法執行。
-
-### 步驟
-
-1. **設定 API Key**
-   - n8n UI → **Settings → n8n API → Create API Key**
-   - 貼到 `.env`：
-     ```
-     N8N_API_URL=http://localhost:5678
-     N8N_API_KEY=<貼上>
-     ```
-
-2. **匯入探測 workflow**
-   - n8n UI → **Workflows → Import from File** → `workflows/verify-wait-probe.json`
-   - 開啟後右上角 **Active** 切為開啟（必須 active，腳本才找得到）
-
-3. **啟動 n8n**（若未啟動）
-   ```bash
-   docker compose up -d n8n
-   curl -fsS http://localhost:5678/healthz
-   ```
-
-4. **執行探測**
-   ```bash
-   bash scripts/verify_n8n_hitl_semantics.sh
-   cat data/logs/n8n_semantics.json
-   ```
-
-### 判讀 `data/logs/n8n_semantics.json`
-
-| 欄位 | 問題 | 期望 |
-|------|------|------|
-| `q1_wait_status_sequence.observed_sequence` | 進 Wait 前後 execution status | 見 `running` → `waiting`；`waiting_observed: true` |
-| `q2_limit_wait_ttl_payload.after_wait_json_on_timeout` | `limitWaitTime`(10s) 超時後 `After wait` 收到的 `$json` | 確認「無 callback 欄位 = 超時」判別法 |
-| `q3_delete_waiting_execution.delete_http` / `post_delete_status` | 對 waiting execution `DELETE` 結果 | 確認 abort（未 waiting 來源）可用 DELETE |
-| `q4_resume_url_when_not_waiting.resume_url_http_when_not_waiting` | execution 非 waiting 時打 resume_url 的 code | 確認非 waiting 時 resume 無效（abort 分流依據） |
-
-- **`passed: true`** ＝ 四問全完成且 Q1 觀測到 `waiting`。
-- **`passed: false`** ＋ `note` ＝ 缺項或某問未完成；按 note 修正後重跑。腳本**不會**在未驗證時假裝通過。
-
-四問拿到真答案前，`auto-media-happy-path.json` 的 Save→Schedule→Wait、Check resume type、abort 分流、forwarder resume_url 皆為**未驗證假設**。

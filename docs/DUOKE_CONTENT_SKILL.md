@@ -7,15 +7,13 @@
 | ----------------------------- | ------------------------------------------------ | --------- |
 | `duoke_threads_copywriter`    | Threads 5 則 + Carousel 文案與圖像 Prompt 摘要           | `post.md` |
 | `**duoke_ig_carousel_image**` | **IG Carousel 全頁圖像生成 Prompt（VISUAL_BASE + A–F）** | `post.md` |
-| `duoke_carousel_svg`          | 單張編輯風海報（向量 SVG，可轉 PNG）                           | `art.svg` |
+| `codex_svg_artist`            | **直接產 PNG**（含 VISUAL_BASE + A–F）；單張 `post.png` 或 `generate_carousel_images.sh` | `post.png` / `carousel/*.png` |
+| `duoke_carousel_svg`          | （舊）向量 SVG，已由 PNG 流程取代                              | `art.svg` |
 
 
-## 只產 Carousel 圖文 Prompt（推薦）
+## 產 IG Carousel **圖片**（PNG，Editorial 風格）
 
-```bash
-./scripts/amctl.sh skill use copy duoke_ig_carousel_image
-./scripts/amctl.sh apply
-```
+Skill 目錄：`config/skills/codex_svg_artist/`（內含你提供的 **VISUAL_BASE**、**PAGE_TYPES A–F**、**BRAND**）
 
 ```bash
 RUN_ID="ig-$(date +%Y%m%d-%H%M%S)"
@@ -25,10 +23,24 @@ RUN_ID="ig-$(date +%Y%m%d-%H%M%S)"
   --action generate_carousel_images \
   --carousel-total 8
 
+# 可選：先產文案 + 各頁 Prompt 到 post.md（copywriter + duoke_threads_copywriter）
+# AUTO_MEDIA_MOCK=0 ./scripts/lib/invoke-engine.sh --run-id "$RUN_ID" --engine copywriter
+
+# 批次產 8 張 PNG（codex → gemini → claude failover）
+AUTO_MEDIA_MOCK=0 ./scripts/generate_carousel_images.sh --run-id "$RUN_ID"
+```
+
+產物：`data/runs/<RUN_ID>/carousel/01.png` … `08.png`，並複製 `01.png` → `post.png`（Telegram / Threads 預覽用）。
+
+## 只產 Carousel **Prompt 文字**（手動貼 Canva / Gemini）
+
+```bash
+./scripts/amctl.sh skill use copy duoke_ig_carousel_image
+./scripts/amctl.sh apply
 AUTO_MEDIA_MOCK=0 ./scripts/lib/invoke-engine.sh --run-id "$RUN_ID" --engine copywriter
 ```
 
-開啟 `data/runs/<RUN_ID>/post.md`，每頁有一段**可直接複製**到 Canva AI / 圖像模型的完整 Prompt。
+開啟 `data/runs/<RUN_ID>/post.md`，每頁有一段**可直接複製**到圖像工具的完整 Prompt。
 
 ### 只產單頁（例如封面）
 
@@ -64,8 +76,9 @@ AUTO_MEDIA_MOCK=0 ./scripts/lib/invoke-engine.sh --run-id "$RUN_ID" --engine cop
 ## n8n
 
 - **Set run context**：`topic`、`audience`
-- **Write TASK.md**：`action` 設 `generate_carousel_images`；可選 `carousel_total: 8`
-- **Invoke copywriter**：使用已掛載的 `duoke_ig_carousel_image` skill
+- **Write TASK.md**：`--carousel-total`（預設 8，Webhook 可傳 `carousel_total`）
+- **Invoke copywriter** → **Sync carousel total**（從 `post.md` 總頁數回寫 TASK）→ **Invoke carousel images**
+- **核准後**：`upload_carousel_catbox.sh` → Threads（`first_url`）／IG（全部 URL）／FB Page（選用）
 
 ## 人類簽核
 

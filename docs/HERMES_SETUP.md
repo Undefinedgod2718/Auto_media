@@ -25,10 +25,15 @@ hermes   # uses config/hermes/CONTEXT.md
 
 Set `features.hermes_gateway: true` in `config/platform.yaml`, then `amctl apply`.
 
-- **Gateway** (`scripts/hermes_telegram_gateway.py`): sole Telegram webhook; enqueue + HTTP 200; worker handles I/O.
-- **n8n**: state machine (Wait, revise, publish). Preview via `POST /internal/schedule-prereview` after `Save wait resume URL`.
-- **Dev (no HTTPS)**: `GATEWAY_URL=http://localhost:8787 bash scripts/start_gateway.sh` and `bash scripts/telegram_poll_forwarder.sh` (poll targets Gateway `/telegram`).
-- **Production**: `bash scripts/enforce_telegram_gateway.sh` after `verify_n8n_node_disable.sh` passes on n8n 2.21.7.
+- **Gateway** (`scripts/hermes_telegram_gateway.py`): sole Telegram webhook; enqueue + HTTP 200; worker runs `hermes_prereview.sh` and `sendPhoto` with `build_caption()` (`post.md` + Hermes 理由/建議, max 1024 chars). Stage2 revise uses caption prefix `（修正後）`.
+- **n8n**: state machine only (Wait, revise, publish). No n8n `Telegram HITL preview` sendPhoto — those nodes stay **disabled**; preview is scheduled via `POST /internal/schedule-prereview` after each `Save wait resume URL`.
+- **Shared data (recommended)**: run Gateway in Docker next to n8n (`docker compose up -d n8n gateway`) so both mount `./data/runs`, `./data/hitl`, `./data/logs` at `/data/*`. Do **not** use host-only Gateway in production — n8n writes artifacts in the container; host Gateway caused `prereview failed` (missing `post.png` on host).
+- **Permission denied on `TASK.md`**: Gateway used to run as root and n8n Execute Command as `node` (uid 1000). Rebuild gateway (`docker compose build gateway && docker compose up -d gateway`) and run `./scripts/fix-data-perms.sh` if old run dirs are root-owned.
+- **Start (default)**: `GATEWAY_RUN_MODE=compose` → `bash scripts/start_gateway.sh` or `bash scripts/start_production.sh` (runs `verify_n8n_claude_engine` + compose up).
+- **Dev (no HTTPS)**: `bash scripts/telegram_poll_forwarder.sh` — auto-resolves Gateway via `/healthz` (`host.docker.internal`, `172.17.0.1`, `localhost`). Override: `GATEWAY_POLL_URL=http://172.17.0.1:8787` in `.env`.
+- **Host-only (debug)**: `GATEWAY_RUN_MODE=host bash scripts/start_gateway.sh` — advanced; same `DATA_ROOT` visibility required.
+- **Production checks**: `bash scripts/enforce_telegram_gateway.sh`; `bash scripts/verify_gateway_exclusive_preview.sh`; `bash scripts/verify_runs_mount_parity.sh <run_id>` after a run.
+- **Claude copy engine (n8n container)**: primary provider is `claude_cli`. Before production: `claude` login → `./scripts/sync_claude_oauth.sh` → `./scripts/inject_n8n_secrets.sh` → `docker compose restart n8n` → `VERIFY_CLAUDE_STRICT=1 bash scripts/verify_n8n_claude_engine.sh`. If auth is missing, `engine_failover.jsonl` shows `claude_cli failed` then `gemini_cli` success (same skill paths).
 - **Abort**: `abort_mode: pre_wait` (DELETE execution, never resume) vs `post_wait` (resume reject when already waiting).
 - Do **not** enable n8n `Telegram Trigger` while Gateway is active.
 

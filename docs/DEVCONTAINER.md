@@ -19,13 +19,17 @@
 5. 執行 `codex` 完成 Codex CLI 登入（SVG 引擎用）。
 6. （可選）執行 `gemini` 完成 Gemini CLI 登入，見 **[GEMINI_CLI.md](GEMINI_CLI.md)**。
 
-登入後同步至 n8n 可讀目錄：
+登入後同步至 n8n 可讀目錄（Docker Desktop virtiofs 常需 inject）：
 
 ```bash
 ./scripts/sync_claude_oauth.sh   # Claude → data/secrets/claude
 ./scripts/sync_gemini_oauth.sh   # Gemini → data/secrets/gemini
+./scripts/inject_n8n_secrets.sh  # copy into running n8n container if bind mount empty
 docker compose restart n8n
+VERIFY_CLAUDE_STRICT=1 ./scripts/verify_n8n_claude_engine.sh
 ```
+
+產線建議：`GATEWAY_RUN_MODE=compose` + `docker compose up -d n8n gateway`（見 [HERMES_SETUP.md](HERMES_SETUP.md)）。`data/runs` 由 n8n 與 gateway 容器共用；宿主僅跑 `telegram_poll_forwarder.sh`。
 
 ## 持久化 `~/.claude`、`~/.codex` 與 `~/.gemini`
 
@@ -62,9 +66,10 @@ gemini   # 首次：Login with Google 或設定 GEMINI_API_KEY
 ```bash
 sudo docker compose -f docker-compose.yml build
 sudo docker compose up -d
+bash scripts/sync_scripts_to_n8n.sh   # 新增腳本後同步進 n8n（腳本會自動用 sudo）
 ```
 
-（`vscode` 透過 sudo 存取宿主 Docker socket；見 `.devcontainer/Dockerfile` 的 sudoers 設定。）
+（`vscode` 透過 sudo 存取宿主 Docker socket；**勿**寫成 `bash docker compose ...`。見 `.devcontainer/Dockerfile` 的 sudoers 設定。）
 
 **風險：** 等同授予容器操作宿主 Docker 的權限。僅在受信任開發機使用，勿用於生產。
 

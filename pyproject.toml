@@ -1,6 +1,6 @@
 [project]
 name = "auto-media-tools"
-version = "0.1.0"
+version = "0.44.1"
 description = "Platform apply and YAML utilities for Auto Media pipeline"
 readme = "README.md"
 requires-python = ">=3.11"
