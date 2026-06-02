@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sqlite3
 import subprocess
 import threading
@@ -666,6 +667,45 @@ def _route_user_text(text: str) -> str:
     return "topic_start"
 
 
+def _parse_hitl_callback(update: dict) -> tuple[str, str, str]:
+    cb = update.get("callback_query") or {}
+    data = str(cb.get("data", ""))
+    m = re.match(r"^am:(v[12]):(approve|revise|reject):([A-Za-z0-9._-]+)$", data)
+    if not m:
+        return "", "", ""
+    return m.group(1), m.group(2), m.group(3)
+
+
+def _mark_hitl_stage(run_id: str, stage: str) -> None:
+    run_dir = DATA_ROOT / "runs" / run_id
+    cmd = [
+        "python3",
+        str(REPO_ROOT / "scripts" / "lib" / "run_state.py"),
+        "--run-dir",
+        str(run_dir),
+        "--run-id",
+        run_id,
+        "mark",
+        "--stage",
+        stage,
+    ]
+    subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=20)
+
+
+def mark_hitl_approval_if_needed(update: dict) -> None:
+    stage, decision, run_id = _parse_hitl_callback(update)
+    if decision != "approve" or not run_id:
+        return
+    try:
+        if stage == "v1":
+            _mark_hitl_stage(run_id, "hitl_v1_pass")
+        elif stage == "v2":
+            _mark_hitl_stage(run_id, "hitl_v2_pass")
+    except Exception as e:
+        # Keep callback forwarding available even when stage mark fails.
+        LOG.warning("mark hitl stage failed run_id=%s stage=%s err=%s", run_id, stage, e)
+
+
 def forward_to_n8n(update: dict) -> None:
     url = f"{N8N_API_URL}/webhook/auto-media-telegram-in"
     http_json("POST", url, update)
@@ -709,6 +749,7 @@ def worker_loop() -> None:
         jt = job.get("job_type", "")
         try:
             if jt == "telegram_callback":
+                mark_hitl_approval_if_needed(job["update"])
                 forward_to_n8n(job["update"])
             elif jt == "telegram_feedback":
                 forward_to_n8n(job["update"])

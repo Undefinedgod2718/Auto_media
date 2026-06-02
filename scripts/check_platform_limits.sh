@@ -20,7 +20,7 @@ RUN_DIR="$(ensure_run_dir "$RUN_ID")"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 run_state_ensure "$RUN_DIR" "$RUN_ID"
 if [[ "$PHASE" == "pre_publish" ]]; then
-  run_state_require_stage "$RUN_DIR" "$RUN_ID" 4 || json_err "run stage not ready for pre_publish check"
+  run_state_require_stage "$RUN_DIR" "$RUN_ID" 5 || json_err "run stage not ready for pre_publish check"
 fi
 
 set +e
