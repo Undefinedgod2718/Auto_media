@@ -67,7 +67,7 @@ bash scripts/setup_wizard.sh --dry-run
 
 **Pass when:** exit code 0; **no** changes to `.env` or `data/state/install.json`; JSON from verify scripts printed.
 
-Runs env-check, lists missing env keys (`n8n`, `telegram`, `gateway`, `llm`, `meta`, `threads`), runs CLI/Telegram verify (warn-only), Meta verify (report only), then doctor. After a real wizard run: `bash scripts/open_user_ui.sh` and `bash scripts/check_dashboard.sh`.
+Runs env-check, lists missing env keys (`n8n`, `telegram`, `gateway`, `llm`, `meta`, `threads`), runs CLI/Telegram verify (warn-only), Meta verify (report only), then doctor. Meta verify passing does not mean THREADS tokens were tested (see `skip THREADS` in output). After a real wizard run: `bash scripts/open_user_ui.sh` and `bash scripts/check_dashboard.sh`.
 
 ### E. Strict verify (wizard completion)
 
@@ -78,6 +78,8 @@ VERIFY_CLI_STRICT=1 bash scripts/verify_n8n_cli_auth.sh
 VERIFY_TELEGRAM_STRICT=1 bash scripts/verify_telegram.sh
 bash scripts/verify_meta_tokens.sh
 ```
+
+A passing Meta verify does not mean THREADS was tested (unset `THREADS_*` yields `skip THREADS`).
 
 Wizard retries failed groups (CLI OAuth, Telegram keys, Meta keys) up to `WIZARD_VERIFY_RETRIES` (default 3).
 

@@ -22,12 +22,9 @@ log() { echo "[wizard] $*" >&2; }
 
 is_dry() { [[ "$DRY_RUN" == "1" ]]; }
 
-DOCKER=(docker)
-if command -v docker >/dev/null 2>&1; then
-  :
-elif sudo -n docker ps >/dev/null 2>&1; then
-  DOCKER=(sudo docker)
-fi
+# shellcheck source=scripts/lib/docker_helpers.sh
+source "$ROOT/scripts/lib/docker_helpers.sh"
+init_docker_compose "$ROOT"
 
 dry_run_list_missing() {
   local groups="$1"
@@ -136,8 +133,8 @@ prompt_env_fields() {
 # Args: optional "force-recreate" to refresh n8n/gateway containers.
 compose_up_services() {
   local force="${1:-}"
-  if ! command -v docker >/dev/null 2>&1 && [[ "${#DOCKER[@]}" -eq 1 ]]; then
-    log "docker missing — skip compose"
+  if [[ "$HAVE_DOCKER_COMPOSE" != "1" ]]; then
+    log "docker compose unavailable — skip compose"
     return 1
   fi
   bash "$ROOT/scripts/stop_old_dashboard.sh" 2>/dev/null || true
@@ -145,15 +142,15 @@ compose_up_services() {
   if [[ "$force" == "force-recreate" ]]; then
     up_args+=(--force-recreate)
   fi
-  "${DOCKER[@]}" compose -f "$ROOT/docker-compose.yml" "${up_args[@]}" n8n gateway
+  "${DOCKER_COMPOSE[@]}" "${up_args[@]}" n8n gateway
 }
 
 compose_up() {
-  if ! command -v docker >/dev/null 2>&1 && [[ "${#DOCKER[@]}" -eq 1 ]]; then
-    log "docker missing — skip compose"
+  if [[ "$HAVE_DOCKER_COMPOSE" != "1" ]]; then
+    log "docker compose unavailable — skip compose"
     return 1
   fi
-  "${DOCKER[@]}" compose -f "$ROOT/docker-compose.yml" build n8n gateway
+  "${DOCKER_COMPOSE[@]}" build n8n gateway
   compose_up_services
 }
 
@@ -169,10 +166,10 @@ host_has_oauth_secrets() {
 }
 
 oauth_refresh_n8n_if_needed() {
-  if ! command -v docker >/dev/null 2>&1 && [[ "${#DOCKER[@]}" -eq 1 ]]; then
+  if [[ "$HAVE_DOCKER_COMPOSE" != "1" ]]; then
     return 0
   fi
-  if ! "${DOCKER[@]}" compose -f "$ROOT/docker-compose.yml" ps -q n8n 2>/dev/null | grep -q .; then
+  if ! "${DOCKER_COMPOSE[@]}" ps -q n8n 2>/dev/null | grep -q .; then
     return 0
   fi
   if ! host_has_oauth_secrets; then
@@ -181,7 +178,7 @@ oauth_refresh_n8n_if_needed() {
   fi
   log "inject_n8n_secrets + restart n8n (host OAuth present)"
   bash "$ROOT/scripts/inject_n8n_secrets.sh"
-  "${DOCKER[@]}" compose -f "$ROOT/docker-compose.yml" restart n8n
+  "${DOCKER_COMPOSE[@]}" restart n8n
   # shellcheck source=scripts/lib/n8n_api_url.sh
   source "$ROOT/scripts/lib/n8n_api_url.sh"
   # shellcheck source=scripts/lib/n8n_wait.sh
@@ -241,9 +238,12 @@ verify_telegram_loop() {
 }
 
 verify_meta_loop() {
-  local n=0
+  local n=0 out
   while [[ "$n" -lt "$MAX_RETRY" ]]; do
-    if bash "$ROOT/scripts/verify_meta_tokens.sh"; then
+    if out="$(bash "$ROOT/scripts/verify_meta_tokens.sh" 2>&1)"; then
+      if [[ "$out" == *"skip THREADS"* ]]; then
+        log "warn: Meta verify passed but THREADS not tested (THREADS_USER_ID or THREADS_ACCESS_TOKEN unset)"
+      fi
       return 0
     fi
     n=$((n + 1))
@@ -260,8 +260,8 @@ hitl_ingress() {
   load_repo_env "$ROOT"
   bash "$ROOT/scripts/setup_production_hitl.sh" || true
   if [[ -z "${WEBHOOK_URL:-}" ]]; then
-    if command -v docker >/dev/null 2>&1 || [[ "${#DOCKER[@]}" -gt 1 ]]; then
-      "${DOCKER[@]}" compose -f "$ROOT/docker-compose.yml" --profile forwarder up -d forwarder 2>/dev/null \
+    if [[ "$HAVE_DOCKER_COMPOSE" == "1" ]]; then
+      "${DOCKER_COMPOSE[@]}" --profile forwarder up -d forwarder 2>/dev/null \
         || bash "$ROOT/scripts/forwarder_ctl.sh" start || true
     else
       bash "$ROOT/scripts/forwarder_ctl.sh" start || true
@@ -270,12 +270,12 @@ hitl_ingress() {
 }
 
 ensure_compose_stack() {
-  if ! command -v docker >/dev/null 2>&1 && [[ "${#DOCKER[@]}" -eq 1 ]]; then
-    log "docker missing — skip compose"
+  if [[ "$HAVE_DOCKER_COMPOSE" != "1" ]]; then
+    log "docker compose unavailable — skip compose"
     return 1
   fi
   if [[ "${WIZARD_FORCE_REBUILD:-0}" != "1" && "$WIZARD_STACK_BUILT" == "1" ]]; then
-    if "${DOCKER[@]}" compose -f "$ROOT/docker-compose.yml" ps -q n8n 2>/dev/null | grep -q .; then
+    if "${DOCKER_COMPOSE[@]}" ps -q n8n 2>/dev/null | grep -q .; then
       log "idempotent: stack_built — skip image build, ensure n8n+gateway up"
       compose_up_services
       return 0
