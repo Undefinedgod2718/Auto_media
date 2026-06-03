@@ -19,7 +19,7 @@
                             ▼
 ┌─────────────────────────────────────────────────────────┐
 │ n8n 產線容器（docker/n8n/Dockerfile）                      │
-│  bash + jq + rsvg + claude-code + gemini-cli（-y 非互動）  │
+│  bash + jq + rsvg + codex + claude-code + gemini-cli       │
 │  無 dockerd | 無 DinD                                    │
 └───────────────────────────┬─────────────────────────────┘
                             │ api_dead.json
@@ -35,7 +35,7 @@
 | 位置 | 用途 |
 |------|------|
 | Dev Container | 本機試跑 SVG、`amctl engine svg codex_cli` 開發 |
-| n8n 產線映像 | 僅在映像已烘焙且驗證後，由 `invoke-engine.sh` 呼叫 |
+| n8n 產線映像 | 預設 `INSTALL_CODEX=true` 烘焙；`invoke-engine.sh` 優先 `codex_cli` |
 | Codex 雲端環境 | **不** 依賴 Docker；用原生依賴或 mock |
 
 `amctl apply` 在 `engines.svg.provider=codex_cli` 時會檢查 `codex` 是否在 PATH（除非 `AUTO_MEDIA_MOCK=1` 或 `AUTO_MEDIA_ALLOW_MISSING_CLI=1`）。
@@ -47,6 +47,19 @@
 - [`post-create.sh`](../.devcontainer/post-create.sh)：若無 `codex` 則 `npm install -g @openai/codex`。
 
 登入：容器內執行 `codex`，使用 **ChatGPT OAuth**（與官方 CLI 相同）。詳見 [DEVCONTAINER.md](DEVCONTAINER.md)。
+
+### n8n 產線映像（預設已烘焙）
+
+```bash
+# 重建並重啟（INSTALL_CODEX 預設 true）
+docker compose build n8n && docker compose up -d n8n
+docker exec auto_media-n8n-1 codex --version
+
+# OAuth：在 Dev Container 或宿主執行 codex 登入後，憑證寫入 data/secrets/codex
+# compose 已掛載至 /home/node/.codex
+```
+
+關閉 Codex：`INSTALL_CODEX=false docker compose build n8n`。
 
 ## 整合測試
 

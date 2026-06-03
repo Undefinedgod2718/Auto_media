@@ -8,4 +8,5 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ -n "$RUN_ID" ]] || { echo '{"ok":false,"error":"missing --run-id"}' >&2; exit 1; }
-exec "$(dirname "${BASH_SOURCE[0]}")/lib/invoke-engine.sh" --run-id "$RUN_ID" --engine svg_artist
+exec /bin/bash "$(dirname "${BASH_SOURCE[0]}")/generate_image.sh" --run-id "$RUN_ID"
+# Carousel batch: generate_carousel_images.sh --run-id "$RUN_ID"

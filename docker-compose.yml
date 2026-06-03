@@ -1,10 +1,17 @@
 services:
   n8n:
     build:
-      context: ./docker/n8n
+      context: .
+      dockerfile: docker/n8n/Dockerfile
+      args:
+        INSTALL_CODEX: ${INSTALL_CODEX:-true}
     image: auto-media-n8n:local
     restart: unless-stopped
-    user: "1000:1000"
+    user: "0:0"
+    entrypoint: ["/entrypoint.sh"]
+    command: ["n8n", "start"]
+    env_file:
+      - .env
     ports:
       - "${N8N_PORT:-5678}:5678"
     environment:
@@ -27,15 +34,18 @@ services:
       LANG: C.UTF-8
       LC_ALL: C.UTF-8
       AUTO_MEDIA_MOCK: ${AUTO_MEDIA_MOCK:-0}
+      AUTO_MEDIA_STRICT_STAGE: ${AUTO_MEDIA_STRICT_STAGE:-0}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
       TELEGRAM_THREAD_ID: ${TELEGRAM_THREAD_ID:-}
       META_GRAPH_API_VERSION: ${META_GRAPH_API_VERSION:-v21.0}
       META_PAGE_ID: ${META_PAGE_ID:-}
       META_PAGE_ACCESS_TOKEN: ${META_PAGE_ACCESS_TOKEN:-}
+      IG_USER_ID: ${IG_USER_ID:-}
       THREADS_USER_ID: ${THREADS_USER_ID:-}
       THREADS_ACCESS_TOKEN: ${THREADS_ACCESS_TOKEN:-}
-      GATEWAY_URL: ${GATEWAY_URL:-http://host.docker.internal:8787}
+      # n8n → Gateway: compose service name (override N8N_GATEWAY_URL for host-only gateway).
+      GATEWAY_URL: ${N8N_GATEWAY_URL:-http://gateway:8787}
       GATEWAY_INTERNAL_SECRET: ${GATEWAY_INTERNAL_SECRET:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GEMINI_CLI_TRUST_WORKSPACE: ${GEMINI_CLI_TRUST_WORKSPACE:-true}
@@ -43,17 +53,18 @@ services:
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
       CLAUDE_CONFIG_DIR: /data/secrets/claude
     volumes:
-      - ./data:/data
-      # Explicit subdir binds for docker-host.sock (Dev Container) where root ./data may not sync.
+      # Do not bind ./data:/data — empty host subdirs shadow image-baked /data/scripts and /data/config/skills
+      # runs/hitl/logs bind-mounted so Gateway (host DATA_ROOT) and n8n share the same tree
       - ./data/runs:/data/runs
       - ./data/logs:/data/logs
       - ./data/hitl:/data/hitl
-      - ./data/config:/data/config
-      - ./scripts:/data/scripts:ro
-      - ./config/skills:/data/config/skills:ro
-      - ./config/platform.yaml:/data/config/platform.yaml:ro
+      # Baked in docker/n8n/Dockerfile (bind mount empty on some Docker Desktop virtiofs)
+      # - ./scripts:/data/scripts:ro
+      # - ./config/skills:/data/config/skills:ro
+      # - ./config/platform.yaml:/data/config/platform.yaml:ro
       - ./data/secrets/claude:/data/secrets/claude
       - ./data/secrets/codex:/data/secrets/codex
+      - ./data/secrets/codex:/home/node/.codex
       - ./data/secrets/gemini:/home/node/.gemini
       - n8n_data:/home/node/.n8n
     # Copywriter + SVG engines run in parallel; 768m reduces OOM risk under load.
@@ -64,6 +75,67 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
+
+  gateway:
+    build:
+      context: .
+      dockerfile: docker/gateway/Dockerfile
+    image: auto-media-gateway:local
+    restart: unless-stopped
+    user: "0:0"
+    entrypoint: ["/entrypoint.sh"]
+    command: ["python3", "/app/scripts/hermes_telegram_gateway.py"]
+    ports:
+      - "${GATEWAY_PORT:-8787}:8787"
+    env_file:
+      - .env
+    environment:
+      AUTO_MEDIA_ROOT: /app
+      DATA_ROOT: /data
+      GATEWAY_PORT: "8787"
+      N8N_API_URL: http://n8n:5678
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+    volumes:
+      - ./data/runs:/data/runs
+      - ./data/logs:/data/logs
+      - ./data/hitl:/data/hitl
+      # Do not bind ./scripts — empty virtiofs dir shadows image COPY (same as n8n).
+    depends_on:
+      n8n:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8787/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  forwarder:
+    image: auto-media-gateway:local
+    build:
+      context: .
+      dockerfile: docker/gateway/Dockerfile
+    restart: unless-stopped
+    user: "0:0"
+    entrypoint: ["/entrypoint.sh"]
+    command: ["bash", "/app/scripts/telegram_poll_forwarder_loop.sh"]
+    profiles: ["forwarder"]
+    env_file:
+      - .env
+    environment:
+      AUTO_MEDIA_ROOT: /app
+      DATA_ROOT: /data
+      GATEWAY_POLL_URL: ${GATEWAY_POLL_URL:-http://gateway:8787}
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+    volumes:
+      - ./data/runs:/data/runs
+      - ./data/logs:/data/logs
+      - ./data/hitl:/data/hitl
+    depends_on:
+      gateway:
+        condition: service_healthy
 
 volumes:
   n8n_data:

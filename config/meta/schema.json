@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Auto Media Meta Limits",
+  "type": "object",
+  "required": ["instagram", "threads", "facebook", "shared"],
+  "properties": {
+    "instagram": {
+      "type": "object",
+      "required": ["posts_per_24h", "carousel_items_max", "caption_max_chars", "hashtag_max"],
+      "properties": {
+        "posts_per_24h": { "type": "integer", "minimum": 1 },
+        "carousel_items_max": { "type": "integer", "minimum": 1 },
+        "carousel_items_min": { "type": "integer", "minimum": 1 },
+        "caption_max_chars": { "type": "integer", "minimum": 1 },
+        "hashtag_max": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "threads": {
+      "type": "object",
+      "required": ["chars_per_post", "posts_per_24h", "posts_per_hour"],
+      "properties": {
+        "chars_per_post": { "type": "integer", "minimum": 1 },
+        "posts_per_24h": { "type": "integer", "minimum": 1 },
+        "posts_per_hour": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "facebook": {
+      "type": "object",
+      "required": ["message_max_chars"],
+      "properties": {
+        "message_max_chars": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "shared": {
+      "type": "object",
+      "properties": {
+        "image_max_bytes": { "type": "integer", "minimum": 1024 }
+      }
+    }
+  }
+}

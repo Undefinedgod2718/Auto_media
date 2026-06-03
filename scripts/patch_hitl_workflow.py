@@ -9,7 +9,6 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 TARGETS = [
     REPO / "workflows" / "auto-media-happy-path.json",
-    REPO / "workflows" / "wf-patched.json",
 ]
 
 RUN_CTX = "$('Set run context').item.json.run_id"

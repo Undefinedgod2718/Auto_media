@@ -5,8 +5,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=/dev/null
 [[ -f "$ROOT/.env" ]] && set -a && source "$ROOT/.env" && set +a
+source "$(dirname "${BASH_SOURCE[0]}")/lib/n8n_api_url.sh"
 
-: "${N8N_API_URL:=http://localhost:5678}"
+N8N_API_URL="$(n8n_api_url_resolve)"
 WEBHOOK_PATH="${AUTO_MEDIA_RUN_WEBHOOK_PATH:-auto-media-run}"
 BASE="${WEBHOOK_URL:-${N8N_API_URL}}"
 BASE="${BASE%/}"

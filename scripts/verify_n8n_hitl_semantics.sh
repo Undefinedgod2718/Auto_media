@@ -8,8 +8,8 @@
 # Writes real answers to data/logs/n8n_semantics.json. NEVER fakes passed=true.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/lib/n8n_api_url.sh"
 
-N8N_API_URL="${N8N_API_URL:-http://localhost:5678}"
 N8N_API_KEY="${N8N_API_KEY:-}"
 OUT="${DATA_ROOT}/logs/n8n_semantics.json"
 mkdir -p "$(dirname "$OUT")"
@@ -26,12 +26,35 @@ load_env_file() {
 
 load_env_file
 
+resolved="$(n8n_api_url_resolve_reachable || true)"
+N8N_API_URL="${resolved%%|*}"
+N8N_API_URL_SOURCE="${resolved##*|}"
 n8n_up=false
-if curl -fsS "${N8N_API_URL}/healthz" >/dev/null 2>&1; then
+if [[ "$N8N_API_URL_SOURCE" != "unreachable" ]]; then
   n8n_up=true
 fi
 
-export N8N_API_URL N8N_API_KEY
+if command -v docker >/dev/null 2>&1; then
+  DOCKER=(docker)
+  if ! docker ps >/dev/null 2>&1; then
+    if sudo -n docker ps >/dev/null 2>&1; then
+      DOCKER=(sudo docker)
+    fi
+  fi
+  if "${DOCKER[@]}" ps >/dev/null 2>&1; then
+    if "${DOCKER[@]}" ps --format '{{.Names}} {{.Status}}' | grep -q 'auto_media-n8n-1 .*Up'; then
+      N8N_PROCESS_HINT="up"
+    else
+      N8N_PROCESS_HINT="down_or_unreachable"
+    fi
+  else
+    N8N_PROCESS_HINT="unknown"
+  fi
+else
+  N8N_PROCESS_HINT="unknown"
+fi
+
+export N8N_API_URL N8N_API_KEY N8N_API_URL_SOURCE N8N_PROCESS_HINT
 
 python3 - "$OUT" "$n8n_up" <<'PY'
 import json, os, sys, time
@@ -48,6 +71,9 @@ WF_NAME = "verify-wait-probe"
 result = {
     "n8n_reachable": n8n_up,
     "n8n_api_url": BASE,
+    "n8n_api_url_source": os.environ.get("N8N_API_URL_SOURCE", "env"),
+    "n8n_api_url_resolved": BASE,
+    "n8n_process_hint": os.environ.get("N8N_PROCESS_HINT", "unknown"),
     "has_api_key": bool(KEY),
     "tested_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     "q1_wait_status_sequence": {"status": "skipped"},
@@ -120,6 +146,19 @@ def newest_exec_id(wf_id):
     return rows[0].get("id") if rows else None
 
 
+def global_max_exec_id():
+    code, data = http("GET", api("/executions?limit=1"))
+    if code != 200 or not isinstance(data, dict):
+        return None
+    rows = data.get("data", [])
+    if not rows:
+        return None
+    try:
+        return int(rows[0].get("id"))
+    except (TypeError, ValueError):
+        return None
+
+
 def exec_status(eid, include_data=False):
     suffix = "?includeData=true" if include_data else ""
     code, data = http("GET", api(f"/executions/{eid}{suffix}"))
@@ -129,20 +168,41 @@ def exec_status(eid, include_data=False):
     return str(d.get("status", "")).lower(), code, d
 
 
+def scan_exec_window_for_workflow(wf_id, start_id, span=120):
+    if start_id is None:
+        return None
+    for eid in range(start_id + 1, start_id + span + 1):
+        st, code, d = exec_status(str(eid), include_data=False)
+        if code != 200 or not isinstance(d, dict):
+            continue
+        if str(d.get("workflowId")) == str(wf_id):
+            return str(eid)
+    return None
+
+
 def trigger_probe(probe_id):
     return http("POST", f"{BASE}{PROBE_PATH}", {"probe_id": probe_id}, timeout=10)
 
 
 def trigger_and_capture(wf_id, probe_id, appear_timeout=12.0):
     before = newest_exec_id(wf_id)
-    trigger_probe(probe_id)
+    before_global = global_max_exec_id()
+    trig_code, trig_data = trigger_probe(probe_id)
     deadline = time.time() + appear_timeout
     while time.time() < deadline:
         cur = newest_exec_id(wf_id)
         if cur and cur != before:
-            return cur
+            return cur, {"trigger_http": trig_code, "trigger_data": trig_data}
+        scanned = scan_exec_window_for_workflow(wf_id, before_global, span=200)
+        if scanned:
+            return scanned, {
+                "trigger_http": trig_code,
+                "trigger_data": trig_data,
+                "capture_mode": "id_scan",
+                "before_global_exec_id": before_global,
+            }
         time.sleep(0.4)
-    return None
+    return None, {"trigger_http": trig_code, "trigger_data": trig_data}
 
 
 def resume_url(eid):
@@ -155,7 +215,7 @@ if not wf_id:
     _write_and_exit(err)
 
 # ---- Q1: status sequence around Wait (expect running -> waiting) ----
-eid1 = trigger_and_capture(wf_id, "q1")
+eid1, trig1 = trigger_and_capture(wf_id, "q1")
 seq = []
 if eid1:
     deadline = time.time() + 8.0
@@ -169,6 +229,8 @@ if eid1:
 result["q1_wait_status_sequence"] = {
     "status": "tested" if eid1 else "no_execution",
     "execution_id": eid1,
+    "trigger_http": trig1.get("trigger_http"),
+    "trigger_data": trig1.get("trigger_data"),
     "observed_sequence": seq,
     "waiting_observed": "waiting" in seq,
 }
@@ -198,7 +260,7 @@ result["q4_resume_url_when_not_waiting"] = q4
 
 # ---- Q3: DELETE a waiting execution ----
 q3 = {"status": "skipped"}
-eid3 = trigger_and_capture(wf_id, "q3")
+eid3, trig3 = trigger_and_capture(wf_id, "q3")
 if eid3:
     # wait until waiting
     wdl = time.time() + 10.0
@@ -214,16 +276,23 @@ if eid3:
     q3 = {
         "status": "tested",
         "execution_id": eid3,
+        "trigger_http": trig3.get("trigger_http"),
         "reached_waiting": reached,
         "delete_http": del_code,
         "post_delete_status": post_st,
         "post_delete_get_http": post_http,
     }
+else:
+    q3 = {
+        "status": "no_execution",
+        "trigger_http": trig3.get("trigger_http"),
+        "trigger_data": trig3.get("trigger_data"),
+    }
 result["q3_delete_waiting_execution"] = q3
 
 # ---- Q2: limitWaitTime TTL (10s) — do NOT resume, inspect resume output ----
 q2 = {"status": "skipped"}
-eid2 = trigger_and_capture(wf_id, "q2")
+eid2, trig2 = trigger_and_capture(wf_id, "q2")
 if eid2:
     # wait > limitWaitTime (10s) + margin
     time.sleep(13.0)
@@ -239,10 +308,18 @@ if eid2:
     q2 = {
         "status": "tested",
         "execution_id": eid2,
+        "trigger_http": trig2.get("trigger_http"),
         "final_status": st,
         "after_wait_json_on_timeout": after_payload,
         "note": "Wait has a single output; TTL resume re-enters via the same edge. "
                 "Distinguish approve vs TTL by presence of callback fields in $json.",
+    }
+else:
+    q2 = {
+        "status": "no_execution",
+        "trigger_http": trig2.get("trigger_http"),
+        "trigger_data": trig2.get("trigger_data"),
+        "note": "Webhook accepted but no execution appeared for verify-wait-probe.",
     }
 result["q2_limit_wait_ttl_payload"] = q2
 

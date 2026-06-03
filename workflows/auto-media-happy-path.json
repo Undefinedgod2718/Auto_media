@@ -64,19 +64,37 @@
             {
               "id": "run_id",
               "name": "run_id",
-              "value": "={{ $json.body?.run_id || $now.format('yyyyMMdd-HHmmss') + '-' + $execution.id }}",
+              "value": "={{ $('Webhook Run').item.json.body?.run_id || $now.format('yyyyMMdd-HHmmss') + '-' + $execution.id }}",
               "type": "string"
             },
             {
               "id": "topic",
               "name": "topic",
-              "value": "={{ $json.body?.topic || $json.topic || 'AI 發展趨勢' }}",
+              "value": "={{ $('Webhook Run').item.json.body?.topic || 'AI 發展趨勢' }}",
               "type": "string"
             },
             {
               "id": "audience",
               "name": "audience",
-              "value": "={{ $json.body?.audience || $json.audience || '25-35 歲科技愛好者' }}",
+              "value": "={{ $('Webhook Run').item.json.body?.audience || '25-35 歲科技愛好者' }}",
+              "type": "string"
+            },
+            {
+              "id": "carousel_total",
+              "name": "carousel_total",
+              "value": "={{ $('Webhook Run').item.json.body?.carousel_total || 0 }}",
+              "type": "number"
+            },
+            {
+              "id": "publish_targets",
+              "name": "publish_targets",
+              "value": "={{ $('Webhook Run').item.json.body?.publish_targets || 'threads' }}",
+              "type": "string"
+            },
+            {
+              "id": "publish_mode_threads",
+              "name": "publish_mode_threads",
+              "value": "={{ $('Webhook Run').item.json.body?.publish_mode_threads || 'carousel' }}",
               "type": "string"
             }
           ]
@@ -94,7 +112,7 @@
     },
     {
       "parameters": {
-        "command": "=mkdir -p /data/runs/{{ $json.run_id }} && /bin/bash /data/scripts/write_task.sh --run-id \"{{ $json.run_id }}\" --topic \"{{ $json.topic }}\" --audience \"{{ $json.audience }}\" --action generate_copy"
+        "command": "=mkdir -p /data/runs/{{ $('Set run context').item.json.run_id }} && /bin/bash /data/scripts/write_task.sh --run-id \"{{ $('Set run context').item.json.run_id }}\" --topic \"{{ $('Set run context').item.json.topic }}\" --audience \"{{ $('Set run context').item.json.audience }}\" --action generate_copy --carousel-total {{ $('Set run context').item.json.carousel_total || 0 }} --publish-targets \"{{ $('Set run context').item.json.publish_targets || $('Webhook Run').item.json.body?.publish_targets || 'threads' }}\" --publish-mode-threads \"{{ $('Set run context').item.json.publish_mode_threads || 'carousel' }}\""
       },
       "id": "write-task",
       "name": "Write TASK.md",
@@ -120,19 +138,6 @@
     },
     {
       "parameters": {
-        "command": "=/bin/bash /data/scripts/generate_svg.sh --run-id \"{{ $('Set run context').item.json.run_id }}\""
-      },
-      "id": "invoke-svg",
-      "name": "Invoke svg artist",
-      "type": "n8n-nodes-base.executeCommand",
-      "typeVersion": 1,
-      "position": [
-        880,
-        80
-      ]
-    },
-    {
-      "parameters": {
         "command": "=/bin/bash /data/scripts/render_png.sh --run-id \"{{ $('Set run context').item.json.run_id }}\""
       },
       "id": "render-png",
@@ -142,7 +147,8 @@
       "position": [
         1220,
         0
-      ]
+      ],
+      "disabled": true
     },
     {
       "parameters": {
@@ -170,6 +176,20 @@
       "position": [
         1540,
         40
+      ]
+    },
+    {
+      "parameters": {
+        "fileSelector": "=/data/runs/{{ $('Set run context').item.json.run_id }}/post.md",
+        "options": {}
+      },
+      "id": "read-md-publish",
+      "name": "Read post.md (publish)",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        2680,
+        140
       ]
     },
     {
@@ -291,7 +311,7 @@
           "parameters": [
             {
               "name": "message",
-              "value": "={{ $('Read post.md').item.json.data }}"
+              "value": "={{ $json.data }}"
             }
           ]
         },
@@ -307,11 +327,11 @@
       "name": "Meta Graph API publish",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "continueOnFail": true,
       "position": [
         2420,
         -40
-      ]
+      ],
+      "disabled": true
     },
     {
       "parameters": {
@@ -342,16 +362,31 @@
     },
     {
       "parameters": {
-        "command": "=/bin/bash /data/scripts/upload_catbox.sh --run-id \"{{ $('Set run context').item.json.run_id }}\" | jq -r '.image_url'"
+        "command": "=/bin/bash /data/scripts/upload_carousel_catbox.sh --run-id \"{{ $('Set run context').item.json.run_id }}\""
       },
       "id": "upload-catbox",
-      "name": "Upload image to catbox",
+      "name": "Upload carousel catbox",
       "type": "n8n-nodes-base.executeCommand",
       "typeVersion": 1,
       "position": [
         2420,
         280
       ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// n8n Code node: Prepare Threads publish — extract first post, clamp to API limit (500).\nconst fs = require('fs');\nconst MAX = 500;\nconst runId = $('Set run context').item.json.run_id;\nconst postPath = `/data/runs/${runId}/post.md`;\nif (!fs.existsSync(postPath)) {\n  throw new Error(`missing ${postPath} — run copywriter first`);\n}\nconst raw = fs.readFileSync(postPath, 'utf8');\n\nfunction pickThreadsText(md) {\n  const s = md.trim();\n  let m = s.match(/##\\s*第\\s*1\\s*則[\\s\\S]*?(?=\\n##\\s*第\\s*2\\s*則|$)/);\n  if (m) return m[0].trim();\n  m = s.match(/###\\s*貼文\\s*1[\\s\\S]*?(?=\\n###\\s*貼文\\s*2|$)/i);\n  if (m) return m[0].trim();\n  if (!/##\\s*Part\\s*2/i.test(s) && !/第\\s*2\\s*則/.test(s)) {\n    const head = s.match(/^##\\s+.+[\\s\\S]*/m);\n    if (head) return head[0].trim();\n  }\n  m = s.match(/^[\\s\\S]*?(?=\\n##\\s*第\\s*2\\s*則|\\n##\\s*Part\\s*2|\\n---\\s*$)/m);\n  return (m ? m[0] : s).trim();\n}\n\nfunction clamp(t) {\n  if (t.length <= MAX) return t;\n  let cut = t.slice(0, MAX - 1);\n  const nl = cut.lastIndexOf('\\n');\n  if (nl > MAX * 0.6) cut = cut.slice(0, nl);\n  else cut = cut.replace(/\\s+\\S*$/, '');\n  return cut.trimEnd() + '…';\n}\n\nconst picked = pickThreadsText(raw);\nconst text = clamp(picked);\nconst image_url = String($json.stdout ?? '').trim();\nif (!image_url) {\n  throw new Error('missing catbox image_url from Upload image to catbox');\n}\nreturn {\n  json: {\n    run_id: runId,\n    text,\n    image_url,\n    text_chars: text.length,\n    threads_truncated: picked.length > MAX || raw.trim().length > text.length,\n  },\n};\n"
+      },
+      "id": "prepare-threads-publish",
+      "name": "Prepare Threads publish",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2530,
+        280
+      ],
+      "disabled": true
     },
     {
       "parameters": {
@@ -367,11 +402,11 @@
             },
             {
               "name": "image_url",
-              "value": "={{ $json.stdout.trim() }}"
+              "value": "={{ $json.image_url }}"
             },
             {
               "name": "text",
-              "value": "={{ $('Read post.md').item.json.data }}"
+              "value": "={{ $json.text }}"
             },
             {
               "name": "access_token",
@@ -388,7 +423,8 @@
       "position": [
         2640,
         280
-      ]
+      ],
+      "disabled": true
     },
     {
       "parameters": {
@@ -417,7 +453,8 @@
       "position": [
         2860,
         280
-      ]
+      ],
+      "disabled": true
     },
     {
       "parameters": {
@@ -465,30 +502,13 @@
     },
     {
       "parameters": {
-        "mode": "manual",
-        "duplicateItem": false,
-        "assignments": {
-          "assignments": [
-            {
-              "id": "feedback_text",
-              "name": "feedback_text",
-              "value": "={{ $json.body?.feedback_text || $json.feedback_text || '' }}",
-              "type": "string"
-            },
-            {
-              "id": "human_decision",
-              "name": "human_decision",
-              "value": "={{ $json.body?.decision || $json.decision || 'revise' }}",
-              "type": "string"
-            }
-          ]
-        },
-        "options": {}
+        "mode": "runOnceForEachItem",
+        "jsCode": "const input = $input.item.json || {};\nconst { json: _dropJsonKey, ...rest } = input;\nconst feedback = String(input.body?.feedback_text ?? input.query?.feedback_text ?? input.feedback_text ?? '');\nconst decision = String(input.body?.decision ?? input.decision ?? 'revise');\nreturn {\n  json: { ...rest, feedback_text: feedback, human_decision: decision },\n  binary: {\n    feedback_text: {\n      data: Buffer.from(feedback, 'utf8').toString('base64'),\n      mimeType: 'text/plain',\n      fileName: 'feedback.txt',\n    },\n  },\n};"
       },
       "id": "set-feedback-text",
       "name": "Set feedback text",
-      "type": "n8n-nodes-base.set",
-      "typeVersion": 3.4,
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
       "position": [
         3420,
         320
@@ -584,7 +604,8 @@
           "id": "CONFIGURE_ME",
           "name": "Telegram account"
         }
-      }
+      },
+      "disabled": true
     },
     {
       "parameters": {
@@ -716,7 +737,195 @@
     },
     {
       "parameters": {
-        "command": "=/bin/bash /data/scripts/append_review_audit.sh --run-id \"{{ $('Set run context').item.json.run_id }}\" --actor human --decision \"{{ $json.body?.callback || $json.query?.callback || $json.callback }}\" --review-round 1 --risk-level \"{{ $('Load hermes assessment').item.json.hermes.risk_level || '' }}\" --high-risk-approved \"{{ (($json.body?.callback || $json.query?.callback || $json.callback) === 'approve' && ($('Load hermes assessment').item.json.hermes.risk_level === 'high')) ? 'true' : 'false' }}\" --reasons-json \"{{ JSON.stringify($('Load hermes assessment').item.json.hermes.reasons || []) }}\" --suggestions-json \"{{ JSON.stringify($('Load hermes assessment').item.json.hermes.suggestions || []) }}\""
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "id": "merge-review-inputs",
+      "name": "Merge review inputs",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        1760,
+        -60
+      ]
+    },
+    {
+      "parameters": {
+        "command": "=/bin/bash /data/scripts/hermes_prereview.sh --run-id \"{{ $('Set run context').item.json.run_id }}\""
+      },
+      "id": "hermes-prereview",
+      "name": "Hermes prereview",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        1980,
+        -60
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const raw=$json.stdout||'{}'; let a; try { a=JSON.parse(raw);} catch(e){throw new Error('invalid hermes assessment:'+raw);} const req=['run_id','review_round','verdict_hint','skill_compliance','reasons','suggestions','risk_level','rerun_scope_hint']; const missing=req.filter(k=>a[k]===undefined); return { json: { ...a, schema_valid: missing.length===0, missing_fields: missing } };"
+      },
+      "id": "parse-hermes-assessment",
+      "name": "Parse Hermes assessment",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2200,
+        -60
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.schema_valid }}",
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "valid"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "id": "switch-assessment-schema",
+      "name": "Switch assessment schema",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        2420,
+        -60
+      ]
+    },
+    {
+      "parameters": {
+        "command": "=/bin/bash /data/scripts/append_review_audit.sh --run-id \"{{ $json.run_id }}\" --actor hermes --decision \"{{ $json.verdict_hint }}\" --review-round \"{{ $json.review_round }}\" --risk-level \"{{ $json.risk_level }}\" --reasons-b64 \"{{ Buffer.from(JSON.stringify($json.reasons || []), 'utf8').toString('base64') }}\" --suggestions-b64 \"{{ Buffer.from(JSON.stringify($json.suggestions || []), 'utf8').toString('base64') }}\" --rerun-scope \"{{ $json.rerun_scope_hint }}\""
+      },
+      "id": "audit-hermes-prereview",
+      "name": "Audit hermes prereview",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        2640,
+        -60
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "duplicateItem": false,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "review_caption",
+              "name": "review_caption",
+              "value": "={{ Buffer.from($('Read post.md').item.binary.data.data, 'base64').toString('utf8') + '\\n\\n[Hermes初審] risk=' + ($('Parse Hermes assessment').item.json.risk_level || 'low') + ' | hint=' + ($('Parse Hermes assessment').item.json.verdict_hint || 'pass') + '\\n理由: ' + (($('Parse Hermes assessment').item.json.reasons||[]).join('；')) + '\\n建議: ' + (($('Parse Hermes assessment').item.json.suggestions||[]).join('；')) }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-review-caption",
+      "name": "Set review caption",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2860,
+        -60
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const png = $('Read post.png').item;\nif (!png.binary?.data) {\n  throw new Error('Read post.png has no binary data; run Invoke image first and ensure post.png exists');\n}\nconst caption = $('Set review caption').item.json.review_caption;\nreturn { json: { ...$input.item.json, review_caption: caption }, binary: png.binary };"
+      },
+      "id": "attach-preview-binary",
+      "name": "Attach preview binary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2980,
+        -60
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "sendPhoto",
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "binaryData": true,
+        "replyMarkup": "inlineKeyboard",
+        "inlineKeyboard": {
+          "rows": [
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "✅ Approve",
+                    "additionalFields": {
+                      "callback_data": "={{ 'am:v1:approve:' + $('Set run context').item.json.run_id }}"
+                    }
+                  },
+                  {
+                    "text": "🛠 Revise",
+                    "additionalFields": {
+                      "callback_data": "={{ 'am:v1:revise:' + $('Set run context').item.json.run_id }}"
+                    }
+                  },
+                  {
+                    "text": "❌ Reject",
+                    "additionalFields": {
+                      "callback_data": "={{ 'am:v1:reject:' + $('Set run context').item.json.run_id }}"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "caption": "={{ $json.review_caption }}",
+        "additionalFields": {}
+      },
+      "id": "telegram-preview-stage1",
+      "name": "Telegram HITL preview",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        3080,
+        0
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "CONFIGURE_ME",
+          "name": "Telegram account"
+        }
+      },
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "command": "=/bin/bash /data/scripts/append_review_audit.sh --run-id \"{{ $('Set run context').item.json.run_id }}\" --actor human --decision \"{{ $json.body?.callback || $json.query?.callback || $json.callback }}\" --review-round 1"
       },
       "id": "audit-human-decision-v1",
       "name": "Audit human decision v1",
@@ -783,7 +992,7 @@
     },
     {
       "parameters": {
-        "command": "=/bin/bash /data/scripts/append_review_audit.sh --run-id \"{{ $json.run_id }}\" --actor hermes --decision revise --review-round \"{{ $json.review_round || 1 }}\" --rerun-scope \"{{ $json.rerun_scope || 'copy_only' }}\" --suggestions-json \"{{ JSON.stringify($json.revision_plan || []) }}\""
+        "command": "=/bin/bash /data/scripts/append_review_audit.sh --run-id \"{{ $json.run_id }}\" --actor hermes --decision revise --review-round \"{{ $json.review_round || 1 }}\" --rerun-scope \"{{ $json.rerun_scope || 'copy_only' }}\" --suggestions-b64 \"{{ Buffer.from(JSON.stringify($json.revision_plan || []), 'utf8').toString('base64') }}\""
       },
       "id": "audit-hermes-revision",
       "name": "Audit hermes revision",
@@ -894,19 +1103,6 @@
     },
     {
       "parameters": {
-        "command": "=/bin/bash /data/scripts/generate_svg.sh --run-id \"{{ $('Set run context').item.json.run_id }}\""
-      },
-      "id": "invoke-svg-revision",
-      "name": "Invoke svg artist (revision)",
-      "type": "n8n-nodes-base.executeCommand",
-      "typeVersion": 1,
-      "position": [
-        4960,
-        400
-      ]
-    },
-    {
-      "parameters": {
         "mode": "append",
         "options": {}
       },
@@ -936,7 +1132,7 @@
     },
     {
       "parameters": {
-        "command": "=/bin/bash /data/scripts/append_review_audit.sh --run-id \"{{ $('Set run context').item.json.run_id }}\" --actor human --decision \"{{ $json.body?.callback || $json.query?.callback || $json.callback }}\" --review-round 2 --risk-level \"{{ $('Load hermes assessment').item.json.hermes.risk_level || '' }}\" --high-risk-approved \"{{ (($json.body?.callback || $json.query?.callback || $json.callback) === 'approve' && ($('Load hermes assessment').item.json.hermes.risk_level === 'high')) ? 'true' : 'false' }}\""
+        "command": "=/bin/bash /data/scripts/append_review_audit.sh --run-id \"{{ $('Set run context').item.json.run_id }}\" --actor human --decision \"{{ $json.body?.callback || $json.query?.callback || $json.callback }}\" --review-round 2"
       },
       "id": "audit-human-decision-v2",
       "name": "Audit human decision v2",
@@ -949,7 +1145,7 @@
     },
     {
       "parameters": {
-        "command": "=/bin/bash /data/scripts/finalize_review_summary.sh --run-id \"{{ $('Set run context').item.json.run_id }}\" --publish-status success --publish-targets 'facebook,threads'"
+        "command": "=echo publish gate already finalized"
       },
       "id": "finalize-review-summary-success",
       "name": "Finalize review summary (success)",
@@ -962,7 +1158,7 @@
     },
     {
       "parameters": {
-        "command": "=/bin/bash /data/scripts/finalize_review_summary.sh --run-id \"{{ $('Set run context').item.json.run_id }}\" --publish-status fail --publish-targets 'facebook,threads'"
+        "command": "=/bin/bash /data/scripts/finalize_review_summary.sh --run-id \"{{ $('Set run context').item.json.run_id }}\" --publish-status fail --publish-targets 'facebook,threads,instagram'"
       },
       "id": "finalize-review-summary-fail",
       "name": "Finalize review summary (fail)",
@@ -971,6 +1167,19 @@
       "position": [
         2640,
         180
+      ]
+    },
+    {
+      "parameters": {
+        "command": "=/bin/bash /data/scripts/append_review_audit.sh --run-id \"{{ $('Set run context').item.json.run_id }}\" --actor system --decision schema_error --review-round 0 --stop-reason schema_error"
+      },
+      "id": "audit-schema-error",
+      "name": "Audit schema error",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        2640,
+        -180
       ]
     },
     {
@@ -1036,7 +1245,7 @@
     },
     {
       "parameters": {
-        "command": "=/bin/bash -c 'curl -fsS -X POST \"https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage\" -d \"chat_id=${TELEGRAM_CHAT_ID}\" -d \"text=Run {{ $('Set run context').item.json.run_id }} rejected (TTL or abort).\"''"
+        "command": "=/usr/bin/env bash -lc \"curl -fsS -X POST \\\"https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage\\\" -d \\\"chat_id=${TELEGRAM_CHAT_ID}\\\" -d \\\"text=Run {{ $('Set run context').item.json.run_id }} rejected (TTL or abort).\\\"\""
       },
       "id": "notify-reject-v1-23a6ea49c984",
       "name": "Notify run rejected (stage1)",
@@ -1050,15 +1259,485 @@
     {
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "const fs = require('fs');\nconst runId = $('Set run context').item.json.run_id;\nlet hermes = {};\ntry { hermes = JSON.parse(fs.readFileSync('/data/runs/' + runId + '/hermes_assessment.json', 'utf8')); } catch (e) { hermes = {}; }\nreturn { json: { ...$json, hermes } };"
+        "jsCode": "const runId = $('Set run context').item.json.run_id;\nconst resumeUrl = String($execution.resumeUrl || '');\nif (!resumeUrl) throw new Error('Missing resumeUrl — use production webhook trigger');\nconst stage = 'v2';\nconst executionId = String($execution.id || '');\nconst fs = require('fs');\nconst dir = '/data/hitl/resume_map';\nfs.mkdirSync(dir, { recursive: true });\nconst mapFile = dir + '/' + runId + '-' + stage + '.json';\nfs.writeFileSync(mapFile, JSON.stringify({ run_id: runId, stage, resume_url: resumeUrl, execution_id: executionId, created_at: new Date().toISOString() }) + '\\n');\nreturn { json: { ...$input.item.json, run_id: runId, resume_url: resumeUrl, execution_id: executionId } };"
       },
-      "id": "load-assess-ddedb982f623",
-      "name": "Load hermes assessment",
+      "id": "save-resume-v2-5be5434421de",
+      "name": "Save wait resume URL (stage2)",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        2360,
+        6060,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ (process.env.GATEWAY_URL || 'http://host.docker.internal:8787') + '/internal/schedule-prereview' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Gateway-Secret",
+              "value": "={{ process.env.GATEWAY_INTERNAL_SECRET || '' }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ run_id: $(\"Set run context\").item.json.run_id, execution_id: String($execution.id), stage: \"v2\" }) }}",
+        "options": {
+          "timeout": 3000
+        }
+      },
+      "id": "sched-gw-v2-41f77b602899",
+      "name": "Schedule Gateway prereview (stage2)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        6280,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "command": "=/bin/bash /data/scripts/publish_threads_chain.sh --run-id \"{{ $('Set run context').item.json.run_id }}\""
+      },
+      "id": "publish-threads-chain",
+      "name": "Publish Threads chain",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        2640,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "command": "=/bin/bash /data/scripts/sync_carousel_total.sh --run-id \"{{ $('Set run context').item.json.run_id }}\""
+      },
+      "id": "exec-sync-carousel-total-ddf35c7a6db4",
+      "name": "Sync carousel total",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        1000,
         0
+      ]
+    },
+    {
+      "parameters": {
+        "command": "=/bin/bash /data/scripts/generate_carousel_images.sh --run-id \"{{ $('Set run context').item.json.run_id }}\""
+      },
+      "id": "exec-invoke-carousel-images-7c3687be2789",
+      "name": "Invoke carousel images",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        1220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "command": "=/bin/bash /data/scripts/sync_carousel_total.sh --run-id \"{{ $('Set run context').item.json.run_id }}\""
+      },
+      "id": "exec-sync-carousel-total-(revision)-1bbfacf73774",
+      "name": "Sync carousel total (revision)",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        5080,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "command": "=/bin/bash /data/scripts/generate_carousel_images.sh --run-id \"{{ $('Set run context').item.json.run_id }}\""
+      },
+      "id": "exec-invoke-carousel-images-(revision)-da8977d68a23",
+      "name": "Invoke carousel images (revision)",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        5300,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "f72048cff31e",
+              "leftValue": "={{ $env.META_PAGE_ID }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-meta_page_id-18bebe67f668",
+      "name": "IF META_PAGE_ID",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2760,
+        -120
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "noop-940d9dd2506a",
+      "name": "No Op FB (skip)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        2980,
+        -200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "f78c2d452065",
+              "leftValue": "={{ $env.THREADS_USER_ID }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-threads_user_id-64e1a951782e",
+      "name": "IF THREADS_USER_ID",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2760,
+        280
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "noop-85dd98d87015",
+      "name": "No Op Threads (skip)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        2980,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "a877ecad3899",
+              "leftValue": "={{ $env.IG_USER_ID }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-ig_user_id-b1a71a677406",
+      "name": "IF IG_USER_ID",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2760,
+        480
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "noop-ced9f7d1453c",
+      "name": "No Op IG (skip)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        2980,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "append",
+        "numberInputs": 3
+      },
+      "id": "merge-publish-149c193b2027",
+      "name": "Merge publish outcomes",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        3200,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "command": "=/bin/bash /data/scripts/publish_ig_carousel.sh --run-id \"{{ $('Set run context').item.json.run_id }}\""
+      },
+      "id": "publish-ig-b851d7a6e4d8",
+      "name": "Publish IG carousel",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        2980,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "command": "=/bin/bash /data/scripts/validate_post_md.sh --run-id \"{{ $('Set run context').item.json.run_id }}\""
+      },
+      "id": "exec-validate-post.md-078e7b575b4b",
+      "name": "Validate post.md",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        880,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "command": "=/bin/bash /data/scripts/publish_facebook.sh --run-id \"{{ $('Set run context').item.json.run_id }}\""
+      },
+      "id": "publish-fb-639b0e360807",
+      "name": "Publish Facebook",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        2980,
+        -120
+      ]
+    },
+    {
+      "parameters": {
+        "command": "=/bin/bash /data/scripts/finalize_publish_gate.sh --run-id \"{{ $('Set run context').item.json.run_id }}\""
+      },
+      "id": "finalize-gate-7689846cd1a4",
+      "name": "Finalize publish gate",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        3420,
+        200
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "command": "=/bin/bash /data/scripts/check_platform_limits.sh --run-id \"{{ $('Set run context').item.json.run_id }}\" --phase pre_hitl"
+      },
+      "id": "exec-check-platform-limits-(pre-hitl)-9bfde8c7794f",
+      "name": "Check platform limits (pre-HITL)",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        990,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "command": "=/bin/bash /data/scripts/check_platform_limits.sh --run-id \"{{ $('Set run context').item.json.run_id }}\" --phase pre_publish"
+      },
+      "id": "exec-check-platform-limits-(pre-publish)-ac2e9e355d75",
+      "name": "Check platform limits (pre-publish)",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        2580,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "command": "=/bin/bash /data/scripts/hermes_content_review.sh --run-id \"{{ $('Set run context').item.json.run_id }}\""
+      },
+      "id": "exec-hermes-content-review-4b8130bfcd4e",
+      "name": "Hermes content review",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        1340,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "196544379969",
+              "leftValue": "={{ $json.should_generate }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-carousel-b2464a69b291",
+      "name": "IF Should generate carousel",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1080,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const runId = $('Set run context').item.json.run_id;\nconst resumeUrl = String($execution.resumeUrl || '');\nif (!resumeUrl) throw new Error('Missing resumeUrl — use production webhook trigger');\nconst stage = 'feedback-v1';\nconst executionId = String($execution.id || '');\nconst fs = require('fs');\nconst dir = '/data/hitl/resume_map';\nfs.mkdirSync(dir, { recursive: true });\nconst mapFile = dir + '/' + runId + '-' + stage + '.json';\nfs.writeFileSync(mapFile, JSON.stringify({ run_id: runId, stage, resume_url: resumeUrl, execution_id: executionId, created_at: new Date().toISOString() }) + '\\n');\nreturn { json: { ...$input.item.json, run_id: runId, resume_url: resumeUrl, execution_id: executionId } };"
+      },
+      "id": "save-resume-feedback-7b5e28a371e6",
+      "name": "Save wait resume URL (feedback-v1)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2980,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "command": "=/bin/bash /data/scripts/should_generate_carousel.sh --run-id \"{{ $('Set run context').item.json.run_id }}\" --json"
+      },
+      "id": "exec-check-should-generate-carousel-b5c728ee9215",
+      "name": "Check should generate carousel",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        1040,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const raw = ($input.item.json.stdout || '').trim();\nlet data = { should_generate: false };\ntry {\n  const line = raw.split('\\n').filter(Boolean).pop() || raw;\n  data = JSON.parse(line);\n} catch (e) {}\nreturn { json: { ...$input.item.json, should_generate: !!data.should_generate } };"
+      },
+      "id": "parse-carousel-main-1ceda5deac6a",
+      "name": "Parse should generate carousel",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1060,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "command": "=/bin/bash /data/scripts/should_generate_carousel.sh --run-id \"{{ $('Set run context').item.json.run_id }}\" --json"
+      },
+      "id": "exec-check-should-generate-carousel-(revision)-60ae01084871",
+      "name": "Check should generate carousel (revision)",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        5180,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const raw = ($input.item.json.stdout || '').trim();\nlet data = { should_generate: false };\ntry {\n  const line = raw.split('\\n').filter(Boolean).pop() || raw;\n  data = JSON.parse(line);\n} catch (e) {}\nreturn { json: { ...$input.item.json, should_generate: !!data.should_generate } };"
+      },
+      "id": "parse-carousel- (revision)-38d1c201aa6a",
+      "name": "Parse should generate carousel (revision)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5240,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "5bf7eaaac04c",
+              "leftValue": "={{ $json.should_generate }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-carousel-47f06b8298bc",
+      "name": "IF Should generate carousel (revision)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        5300,
+        400
       ]
     }
   ],
@@ -1114,11 +1793,6 @@
             "node": "Invoke copywriter",
             "type": "main",
             "index": 0
-          },
-          {
-            "node": "Invoke svg artist",
-            "type": "main",
-            "index": 0
           }
         ]
       ]
@@ -1127,20 +1801,9 @@
       "main": [
         [
           {
-            "node": "Merge branches",
+            "node": "Validate post.md",
             "type": "main",
             "index": 0
-          }
-        ]
-      ]
-    },
-    "Invoke svg artist": {
-      "main": [
-        [
-          {
-            "node": "Merge branches",
-            "type": "main",
-            "index": 1
           }
         ]
       ]
@@ -1149,7 +1812,7 @@
       "main": [
         [
           {
-            "node": "Render PNG",
+            "node": "Save wait resume URL (stage1)",
             "type": "main",
             "index": 0
           }
@@ -1163,14 +1826,121 @@
             "node": "Save wait resume URL (stage1)",
             "type": "main",
             "index": 0
-          },
+          }
+        ]
+      ]
+    },
+    "Read post.png": {
+      "main": [
+        [
           {
-            "node": "Read post.png",
+            "node": "Merge review inputs",
             "type": "main",
             "index": 0
-          },
+          }
+        ]
+      ]
+    },
+    "Read post.md": {
+      "main": [
+        [
           {
-            "node": "Read post.md",
+            "node": "Merge review inputs",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge review inputs": {
+      "main": [
+        [
+          {
+            "node": "Hermes prereview",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hermes prereview": {
+      "main": [
+        [
+          {
+            "node": "Parse Hermes assessment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Hermes assessment": {
+      "main": [
+        [
+          {
+            "node": "Switch assessment schema",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch assessment schema": {
+      "main": [
+        [
+          {
+            "node": "Audit hermes prereview",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Audit schema error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Audit hermes prereview": {
+      "main": [
+        [
+          {
+            "node": "Set review caption",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set review caption": {
+      "main": [
+        [
+          {
+            "node": "Attach preview binary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Attach preview binary": {
+      "main": [
+        [
+          {
+            "node": "Telegram HITL preview",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram HITL preview": {
+      "main": [
+        [
+          {
+            "node": "Wait for approval (stage1)",
             "type": "main",
             "index": 0
           }
@@ -1217,19 +1987,25 @@
       "main": [
         [
           {
-            "node": "Meta Graph API publish",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Upload image to catbox",
+            "node": "Read post.md (publish)",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Upload image to catbox": {
+    "Read post.md (publish)": {
+      "main": [
+        [
+          {
+            "node": "Check platform limits (pre-publish)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Threads publish": {
       "main": [
         [
           {
@@ -1264,7 +2040,13 @@
     },
     "Meta Graph API publish": {
       "main": [
-        [],
+        [
+          {
+            "node": "Merge publish outcomes",
+            "type": "main",
+            "index": 0
+          }
+        ],
         [
           {
             "node": "Write api_dead.json",
@@ -1294,7 +2076,7 @@
       "main": [
         [
           {
-            "node": "Wait for feedback",
+            "node": "Save wait resume URL (feedback-v1)",
             "type": "main",
             "index": 0
           }
@@ -1399,11 +2181,6 @@
             "node": "Invoke copywriter (revision)",
             "type": "main",
             "index": 0
-          },
-          {
-            "node": "Invoke svg artist (revision)",
-            "type": "main",
-            "index": 0
           }
         ]
       ]
@@ -1412,20 +2189,9 @@
       "main": [
         [
           {
-            "node": "Merge revision branches",
+            "node": "Check should generate carousel (revision)",
             "type": "main",
             "index": 0
-          }
-        ]
-      ]
-    },
-    "Invoke svg artist (revision)": {
-      "main": [
-        [
-          {
-            "node": "Merge revision branches",
-            "type": "main",
-            "index": 1
           }
         ]
       ]
@@ -1445,12 +2211,7 @@
       "main": [
         [
           {
-            "node": "Read post.png (stage2)",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Read post.md (stage2)",
+            "node": "Save wait resume URL (stage2)",
             "type": "main",
             "index": 0
           }
@@ -1541,12 +2302,7 @@
       "main": [
         [
           {
-            "node": "Meta Graph API publish",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Upload image to catbox",
+            "node": "Read post.md (publish)",
             "type": "main",
             "index": 0
           }
@@ -1579,18 +2335,380 @@
       "main": [
         [
           {
-            "node": "Load hermes assessment",
+            "node": "Switch callback (stage1)",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Load hermes assessment": {
+    "Save wait resume URL (stage2)": {
       "main": [
         [
           {
-            "node": "Switch callback (stage1)",
+            "node": "Schedule Gateway prereview (stage2)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule Gateway prereview (stage2)": {
+      "main": [
+        [
+          {
+            "node": "Wait for approval (stage2)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Publish Threads chain": {
+      "main": [
+        [
+          {
+            "node": "Merge publish outcomes",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Sync carousel total": {
+      "main": [
+        [
+          {
+            "node": "Invoke carousel images",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Invoke carousel images": {
+      "main": [
+        [
+          {
+            "node": "Hermes content review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sync carousel total (revision)": {
+      "main": [
+        [
+          {
+            "node": "Invoke carousel images (revision)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Invoke carousel images (revision)": {
+      "main": [
+        [
+          {
+            "node": "Merge revision branches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF META_PAGE_ID": {
+      "main": [
+        [
+          {
+            "node": "Publish Facebook",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Op FB (skip)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "No Op FB (skip)": {
+      "main": [
+        [
+          {
+            "node": "Merge publish outcomes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload carousel catbox": {
+      "main": [
+        [
+          {
+            "node": "IF THREADS_USER_ID",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "IF IG_USER_ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF THREADS_USER_ID": {
+      "main": [
+        [
+          {
+            "node": "Publish Threads chain",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Op Threads (skip)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF IG_USER_ID": {
+      "main": [
+        [
+          {
+            "node": "Publish IG carousel",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Op IG (skip)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "No Op Threads (skip)": {
+      "main": [
+        [
+          {
+            "node": "Merge publish outcomes",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Publish IG carousel": {
+      "main": [
+        [
+          {
+            "node": "Merge publish outcomes",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "No Op IG (skip)": {
+      "main": [
+        [
+          {
+            "node": "Merge publish outcomes",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Merge publish outcomes": {
+      "main": [
+        [
+          {
+            "node": "Finalize publish gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate post.md": {
+      "main": [
+        [
+          {
+            "node": "Check platform limits (pre-HITL)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Publish Facebook": {
+      "main": [
+        [
+          {
+            "node": "Merge publish outcomes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Finalize publish gate": {
+      "main": [
+        [
+          {
+            "node": "Finalize review summary (success)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ],
+      "error": [
+        [
+          {
+            "node": "Finalize review summary (fail)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check platform limits (pre-HITL)": {
+      "main": [
+        [
+          {
+            "node": "Check should generate carousel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check platform limits (pre-publish)": {
+      "main": [
+        [
+          {
+            "node": "IF META_PAGE_ID",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Upload carousel catbox",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hermes content review": {
+      "main": [
+        [
+          {
+            "node": "Save wait resume URL (stage1)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Should generate carousel": {
+      "main": [
+        [
+          {
+            "node": "Sync carousel total",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Hermes content review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save wait resume URL (feedback-v1)": {
+      "main": [
+        [
+          {
+            "node": "Wait for feedback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check should generate carousel": {
+      "main": [
+        [
+          {
+            "node": "Parse should generate carousel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse should generate carousel": {
+      "main": [
+        [
+          {
+            "node": "IF Should generate carousel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check should generate carousel (revision)": {
+      "main": [
+        [
+          {
+            "node": "Parse should generate carousel (revision)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse should generate carousel (revision)": {
+      "main": [
+        [
+          {
+            "node": "IF Should generate carousel (revision)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Should generate carousel (revision)": {
+      "main": [
+        [
+          {
+            "node": "Sync carousel total (revision)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Merge revision branches",
             "type": "main",
             "index": 0
           }

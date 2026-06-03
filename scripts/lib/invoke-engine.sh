@@ -9,14 +9,16 @@ ENGINE=""
 MOCK="${AUTO_MEDIA_MOCK:-0}"
 
 usage() {
-  echo "Usage: invoke-engine.sh --run-id ID --engine copywriter|svg_artist" >&2
+  echo "Usage: invoke-engine.sh --run-id ID --engine copywriter|svg_artist [--out-file PATH]" >&2
   exit 1
 }
 
+IMAGE_OUT_FILE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --run-id) RUN_ID="$2"; shift 2 ;;
     --engine) ENGINE="$2"; shift 2 ;;
+    --out-file) IMAGE_OUT_FILE="$2"; shift 2 ;;
     *) usage ;;
   esac
 done
@@ -36,12 +38,18 @@ _Mock output (AUTO_MEDIA_MOCK=1). Replace with Claude CLI in production._
 - Generated at: $(date -u +%Y-%m-%dT%H:%M:%SZ)
 EOF
   else
-    cat >"$OUT_FILE" <<'SVGEOF'
-<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1080" viewBox="0 0 1080 1080">
-  <rect width="1080" height="1080" fill="#0f172a"/>
-  <text x="540" y="540" text-anchor="middle" fill="#f8fafc" font-family="sans-serif" font-size="48">Auto Media Mock SVG</text>
-</svg>
-SVGEOF
+    python3 - "$OUT_FILE" <<'PY'
+import sys
+from pathlib import Path
+png = bytes([
+  0x89,0x50,0x4E,0x47,0x0D,0x0A,0x1A,0x0A,0x00,0x00,0x00,0x0D,0x49,0x48,0x44,0x52,
+  0x00,0x00,0x04,0x38,0x00,0x00,0x04,0x38,0x08,0x02,0x00,0x00,0x00,0x6F,0x1A,0x0D,
+  0x24,0x00,0x00,0x00,0x0C,0x49,0x44,0x41,0x54,0x08,0xD7,0x63,0xF8,0xCF,0xC0,0x00,
+  0x00,0x03,0x01,0x01,0x00,0x18,0xDD,0x8D,0xB4,0x00,0x00,0x00,0x00,0x49,0x45,0x4E,0x44,
+  0xAE,0x42,0x60,0x82,
+])
+Path(sys.argv[1]).write_bytes(png)
+PY
   fi
 }
 
@@ -52,7 +60,7 @@ TASK_FILE="${RUN_DIR}/TASK.md"
 if [[ "$MOCK" == "1" ]]; then
   case "$ENGINE" in
     copywriter) OUT_FILE="${RUN_DIR}/post.md"; mock_generate; json_ok "$OUT_FILE" ;;
-    svg_artist) OUT_FILE="${RUN_DIR}/art.svg"; mock_generate; json_ok "$OUT_FILE" ;;
+    svg_artist) OUT_FILE="${RUN_DIR}/post.png"; mock_generate; json_ok "$OUT_FILE" ;;
     *) json_err "unknown engine: $ENGINE" ;;
   esac
   # Mock mode should short-circuit the real provider path.
@@ -89,7 +97,11 @@ case "$ENGINE" in
     OUT_FILE="${RUN_DIR}/post.md"
     ;;
   svg_artist)
-    OUT_FILE="${RUN_DIR}/art.svg"
+    if [[ -n "$IMAGE_OUT_FILE" ]]; then
+      OUT_FILE="$IMAGE_OUT_FILE"
+    else
+      OUT_FILE="${RUN_DIR}/post.png"
+    fi
     ;;
 esac
 
@@ -100,23 +112,182 @@ _pfail() {
   return 1
 }
 
+# Reject CLI meta chatter in post.md; strip English preamble when zh body exists.
+finalize_copywriter_output() {
+  local f="$1"
+  [[ -s "$f" ]] || return 1
+  python3 - "$f" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8", errors="replace")
+
+META = [
+    r"I have completed the (?:task|copywriting)",
+    r"Successfully generated",
+    r"(?:written|saved)(?:\s+the\s+social\s+media\s+post)?\s+to\s+[`']?/data/runs/.*/post\.md",
+    r"Research\s*&\s*Synthesis",
+    r"\*\*Implementation:\*\*",
+    r"The post is now ready for use",
+]
+
+
+def zh(s: str) -> int:
+    return len(re.findall(r"[\u4e00-\u9fff]", s))
+
+
+def has_meta(s: str) -> bool:
+    return any(re.search(p, s, re.I) for p in META)
+
+
+def normalize(t: str) -> str:
+    if zh(t) < 20 or not has_meta(t):
+        return t.strip()
+    for i, line in enumerate(t.splitlines()):
+        if zh(line) >= 4:
+            body = "\n".join(t.splitlines()[i:]).strip()
+            if zh(body) >= 20:
+                return body
+    return t.strip()
+
+
+def valid(t: str) -> bool:
+    return zh(t) >= 20 and not has_meta(t)
+
+
+out = normalize(text)
+if not valid(out):
+    sys.exit(1)
+if out != text.strip():
+    path.write_text(out + ("\n" if out and not out.endswith("\n") else ""), encoding="utf-8")
+sys.exit(0)
+PY
+}
+
 # Skill files required for the current engine (provider-independent).
 required_skill_files() {
   if [[ "$ENGINE" == "copywriter" ]]; then
     echo "SKILL.md BRAND.md TEMPLATE.md"
   else
-    echo "SKILL.md PALETTE.md RULES.md"
+    echo "SKILL.md VISUAL_BASE.md PAGE_TYPES.md PALETTE.md RULES.md BRAND.md"
   fi
 }
 
-# Engine-aware prompt shared by every provider, so each provider produces the
-# right artifact (copy → post.md, svg → art.svg) instead of being aliased away.
+# Engine-aware prompt: copy → post.md, svg_artist → post.png/jpg (raster only).
 build_prompt() {
+  if [[ -n "${CAROUSEL_PAGE_PROMPT:-}" ]]; then
+    printf '%s' "${CAROUSEL_PAGE_PROMPT} Write the image ONLY to ${OUT_FILE} using your file/image tool. Valid PNG or JPEG, max 8MB, 1080x1080. No SVG. No stdout chatter."
+    return
+  fi
   if [[ "$ENGINE" == "copywriter" ]]; then
     printf '%s' "Read system instructions from ${SKILL_DIR}/SKILL.md. Apply brand voice from ${SKILL_DIR}/BRAND.md. Read task from ${TASK_FILE}. Format output per ${SKILL_DIR}/TEMPLATE.md. Write final output ONLY to ${OUT_FILE}. Do not print conversational text to stdout."
   else
-    printf '%s' "Read ${SKILL_DIR}/SKILL.md, ${SKILL_DIR}/PALETTE.md, ${SKILL_DIR}/RULES.md and task ${TASK_FILE}. Write a complete valid W3C SVG document ONLY to ${OUT_FILE}. First line must be <svg or <?xml. viewBox 0 0 1080 1080. No external URLs. No stdout chatter."
+    printf '%s' "Read ${SKILL_DIR}/SKILL.md, ${SKILL_DIR}/VISUAL_BASE.md, ${SKILL_DIR}/PAGE_TYPES.md, ${SKILL_DIR}/BRAND.md, ${SKILL_DIR}/RULES.md and task ${TASK_FILE}. For single-image tasks use page type A Cover unless TASK specifies page_type. Create a 1080x1080 editorial slide. Write a valid PNG or JPEG ONLY to ${OUT_FILE} using your file/image tool. Max 8MB. No SVG/XML/Markdown in the output file. No stdout chatter."
   fi
+}
+
+# Gemini CLI workspace is cwd + --include-directories; use run-relative paths for /data/runs files.
+build_gemini_prompt() {
+  local out_path="$OUT_FILE" task_path="$TASK_FILE"
+  if [[ "$OUT_FILE" == "${RUN_DIR}/"* ]]; then
+    out_path="${OUT_FILE#"${RUN_DIR}/"}"
+  fi
+  if [[ "$TASK_FILE" == "${RUN_DIR}/"* ]]; then
+    task_path="${TASK_FILE#"${RUN_DIR}/"}"
+  fi
+  if [[ -n "${CAROUSEL_PAGE_PROMPT:-}" ]]; then
+    printf '%s' "${CAROUSEL_PAGE_PROMPT} Write the image ONLY to ${out_path} using your write_file tool. Valid PNG or JPEG, max 8MB, 1080x1080. No SVG. No stdout chatter."
+    return
+  fi
+  if [[ "$ENGINE" == "copywriter" ]]; then
+    printf '%s' "Read ${SKILL_DIR}/SKILL.md, ${SKILL_DIR}/BRAND.md, ${SKILL_DIR}/TEMPLATE.md. Read task from ${task_path}. Write final Traditional Chinese (zh-TW) output ONLY to ${out_path} using write_file. Do not use activate_skill. No stdout chatter."
+  else
+    printf '%s' "Read ${SKILL_DIR}/SKILL.md, ${SKILL_DIR}/PALETTE.md, ${SKILL_DIR}/RULES.md and task ${task_path}. Create a 1080x1080 PNG or JPEG. Write ONLY to ${out_path} using write_file. Max 8MB. No SVG."
+  fi
+}
+
+run_gemini_prompt() {
+  local prompt="$1"
+  local _gemini_err
+  _gemini_err="$(mktemp)"
+  if ! (
+    cd "$RUN_DIR" || exit 1
+    "$BINARY" -y --skip-trust \
+      --include-directories "$RUN_DIR" \
+      --include-directories "$SKILL_DIR" \
+      --include-directories "${DATA_ROOT}/runs" \
+      --include-directories "${DATA_ROOT}/config" \
+      -p "$prompt" </dev/null >/dev/null 2>"$_gemini_err"
+  ); then
+    local _tail
+    _tail="$(tail -8 "$_gemini_err" 2>/dev/null | tr '\n' ' ' | sed 's/  */ /g')"
+    rm -f "$_gemini_err"
+    _pfail "gemini CLI failed${_tail:+: ${_tail}}"
+    return 1
+  fi
+  rm -f "$_gemini_err"
+  return 0
+}
+
+resolve_post_image() {
+  local dir="$1"
+  if [[ -s "${dir}/post.png" ]]; then
+    OUT_FILE="${dir}/post.png"
+    return 0
+  fi
+  if [[ -s "${dir}/post.jpg" ]]; then
+    OUT_FILE="${dir}/post.jpg"
+    return 0
+  fi
+  if [[ -s "${dir}/post.jpeg" ]]; then
+    OUT_FILE="${dir}/post.jpeg"
+    return 0
+  fi
+  return 1
+}
+
+# Carousel pages pass --out-file carousel/NN.png; success only when that path exists (not post.png alone).
+svg_output_ready() {
+  if [[ -n "$IMAGE_OUT_FILE" ]]; then
+    mkdir -p "$(dirname "$IMAGE_OUT_FILE")"
+    if [[ -s "$IMAGE_OUT_FILE" ]] && image_is_valid "$IMAGE_OUT_FILE"; then
+      OUT_FILE="$IMAGE_OUT_FILE"
+      return 0
+    fi
+    if resolve_post_image "$RUN_DIR"; then
+      cp -f "$OUT_FILE" "$IMAGE_OUT_FILE" || return 1
+      OUT_FILE="$IMAGE_OUT_FILE"
+      [[ -s "$OUT_FILE" ]] && image_is_valid "$OUT_FILE"
+      return $?
+    fi
+    return 1
+  fi
+  if [[ -s "$OUT_FILE" ]] && image_is_valid "$OUT_FILE"; then
+    return 0
+  fi
+  if resolve_post_image "$RUN_DIR"; then
+    [[ -s "$OUT_FILE" ]] && image_is_valid "$OUT_FILE"
+    return $?
+  fi
+  return 1
+}
+
+image_is_valid() {
+  local f="$1"
+  [[ -s "$f" ]] || return 1
+  python3 - "$f" <<'PY'
+import sys
+from pathlib import Path
+p = Path(sys.argv[1])
+data = p.read_bytes()
+if len(data) > 8 * 1024 * 1024:
+    sys.exit(1)
+if data[:8] == b"\x89PNG\r\n\x1a\n" or data[:3] == b"\xff\xd8\xff":
+    sys.exit(0)
+sys.exit(1)
+PY
 }
 
 claude_dir_has_auth() {
@@ -191,11 +362,32 @@ invoke_claude_cli() {
     return 1
   fi
   rm -f "$_claude_err"
-  [[ -f "$OUT_FILE" ]] || { _pfail "claude: output not created: $OUT_FILE"; return 1; }
   if [[ "$ENGINE" == "svg_artist" ]]; then
-    normalize_svg_output "$OUT_FILE"
-    svg_is_valid "$OUT_FILE" || { _pfail "claude: invalid svg"; return 1; }
+    svg_output_ready || { _pfail "claude: image not created at ${OUT_FILE} (or post.png in $RUN_DIR)"; return 1; }
+  else
+    [[ -f "$OUT_FILE" ]] || { _pfail "claude: output not created: $OUT_FILE"; return 1; }
   fi
+}
+
+run_codex_exec() {
+  local prompt="$1"
+  local _codex_err
+  _codex_err="$(mktemp)"
+  # codex 0.135+ removed root-level -y; use exec in run cwd for /data/runs writes.
+  if ! (cd "$RUN_DIR" &&   "$BINARY" exec --dangerously-bypass-approvals-and-sandbox "$prompt" \
+    </dev/null >/dev/null 2>"$_codex_err"); then
+    local _tail
+    _tail="$(tail -5 "$_codex_err" 2>/dev/null | tr '\n' ' ' | sed 's/  */ /g')"
+    rm -f "$_codex_err"
+    if [[ "$_tail" == *"refresh token was revoked"* || "$_tail" == *"401 Unauthorized"* ]]; then
+      _pfail "codex auth expired — run: codex login && ./scripts/sync_codex_oauth.sh && ./scripts/inject_n8n_secrets.sh"
+      return 1
+    fi
+    _pfail "codex CLI failed${_tail:+: ${_tail}}"
+    return 1
+  fi
+  rm -f "$_codex_err"
+  return 0
 }
 
 invoke_codex_cli() {
@@ -208,11 +400,11 @@ invoke_codex_cli() {
 
   local prompt
   prompt="$(build_prompt)"
-  "$BINARY" -y "$prompt" </dev/null >/dev/null 2>&1 || { _pfail "codex CLI failed"; return 1; }
-  [[ -f "$OUT_FILE" ]] || { _pfail "codex: output not created: $OUT_FILE"; return 1; }
+  run_codex_exec "$prompt" || return 1
   if [[ "$ENGINE" == "svg_artist" ]]; then
-    normalize_svg_output "$OUT_FILE"
-    svg_is_valid "$OUT_FILE" || { _pfail "codex: invalid svg"; return 1; }
+    svg_output_ready || { _pfail "codex: image not created at ${OUT_FILE} (or post.png in $RUN_DIR)"; return 1; }
+  else
+    [[ -f "$OUT_FILE" ]] || { _pfail "codex: output not created: $OUT_FILE"; return 1; }
   fi
 }
 
@@ -366,78 +558,44 @@ invoke_gemini_cli() {
   command -v "$BINARY" >/dev/null 2>&1 || { _pfail "gemini: binary not found: $BINARY"; return 1; }
   gemini_has_auth || { _pfail "gemini_cli not authenticated: $(gemini_auth_hint)"; return 1; }
   gemini_prepare_home
-  # n8n /data/runs/* is not an interactive trusted folder — required for headless
   export GEMINI_CLI_TRUST_WORKSPACE="${GEMINI_CLI_TRUST_WORKSPACE:-true}"
 
-  local prompt f
-  if [[ "$ENGINE" == "copywriter" ]]; then
-    for f in $(required_skill_files); do
-      [[ -f "${SKILL_DIR}/${f}" ]] || { _pfail "gemini: missing ${SKILL_DIR}/${f}"; return 1; }
-    done
-    prompt="Read system instructions from ${SKILL_DIR}/SKILL.md. Apply brand voice from ${SKILL_DIR}/BRAND.md. Read task from ${TASK_FILE}. Format output per ${SKILL_DIR}/TEMPLATE.md. Write final output ONLY to ${OUT_FILE}. Do not print conversational text to stdout."
-  else
-    for f in $(required_skill_files); do
-      [[ -f "${SKILL_DIR}/${f}" ]] || { _pfail "gemini: missing ${SKILL_DIR}/${f}"; return 1; }
-    done
-    prompt="Read ${SKILL_DIR}/SKILL.md, ${SKILL_DIR}/PALETTE.md, ${SKILL_DIR}/RULES.md and task ${TASK_FILE}. Write a complete valid W3C SVG document to ${OUT_FILE} using your file tool. ${OUT_FILE} must start with <svg or <?xml on line 1. viewBox 0 0 1080 1080. No external URLs. Do not write explanatory prose into ${OUT_FILE} or stdout."
-  fi
+  local f prompt
+  for f in $(required_skill_files); do
+    [[ -f "${SKILL_DIR}/${f}" ]] || { _pfail "gemini: missing ${SKILL_DIR}/${f}"; return 1; }
+  done
+  prompt="$(build_gemini_prompt)"
 
-  local _gemini_err _gemini_stdout
-  _gemini_err="$(mktemp)"
   if [[ "$ENGINE" == "svg_artist" ]]; then
-    if ! "$BINARY" -p "$prompt" -y --skip-trust </dev/null >/dev/null 2>"$_gemini_err"; then
-      local _tail
-      _tail="$(tail -3 "$_gemini_err" 2>/dev/null | tr '\n' ' ' | sed 's/  */ /g')"
-      rm -f "$_gemini_err"
-      _pfail "gemini CLI failed${_tail:+: ${_tail}}"
-      return 1
+    run_gemini_prompt "$prompt" || return 1
+    if ! svg_output_ready; then
+      local repair_prompt
+      repair_prompt="Rewrite $(basename "$OUT_FILE") as a valid 1080x1080 PNG or JPEG only (max 8MB). No SVG. Use write_file."
+      run_gemini_prompt "$repair_prompt" || true
     fi
-    if ! svg_is_valid "$OUT_FILE"; then
-      _gemini_stdout="$(mktemp)"
-      if "$BINARY" -p "$prompt" -y --skip-trust </dev/null >"$_gemini_stdout" 2>>"$_gemini_err"; then
-        cp -f "$_gemini_stdout" "$OUT_FILE"
-      fi
-      rm -f "$_gemini_stdout"
-      if ! svg_is_valid "$OUT_FILE"; then
-        local repair_prompt
-        repair_prompt="Rewrite ${OUT_FILE} as valid W3C SVG only (viewBox 0 0 1080 1080). First line must be <svg or <?xml. No prose. Use your file tool."
-        "$BINARY" -p "$repair_prompt" -y --skip-trust </dev/null >/dev/null 2>>"$_gemini_err" || true
-        svg_is_valid "$OUT_FILE" || true
-      fi
-    fi
-    rm -f "$_gemini_err"
-    [[ -f "$OUT_FILE" ]] || { _pfail "gemini: output not created: $OUT_FILE"; return 1; }
-    svg_is_valid "$OUT_FILE" || { _pfail "gemini: invalid SVG XML"; return 1; }
+    svg_output_ready || { _pfail "gemini: invalid image at ${OUT_FILE} (need PNG/JPEG <=8MB)"; return 1; }
     return 0
   fi
 
-  if ! "$BINARY" -p "$prompt" -y --skip-trust </dev/null >"$OUT_FILE" 2>"$_gemini_err"; then
-    local _tail
-    _tail="$(tail -3 "$_gemini_err" 2>/dev/null | tr '\n' ' ' | sed 's/  */ /g')"
-    rm -f "$_gemini_err"
-    _pfail "gemini CLI failed${_tail:+: ${_tail}}"
-    return 1
-  fi
-  rm -f "$_gemini_err"
+  run_gemini_prompt "$prompt" || return 1
   if [[ ! -s "$OUT_FILE" ]]; then
-    _gemini_err="$(mktemp)"
-    if ! "$BINARY" -p "$prompt" --skip-trust </dev/null >"$OUT_FILE" 2>"$_gemini_err"; then
-      local _tail
-      _tail="$(tail -3 "$_gemini_err" 2>/dev/null | tr '\n' ' ' | sed 's/  */ /g')"
-      rm -f "$_gemini_err"
-      _pfail "gemini CLI failed (no output file)${_tail:+: ${_tail}}"
-      return 1
-    fi
-    rm -f "$_gemini_err"
+    run_gemini_prompt "$prompt" || { _pfail "gemini CLI failed (no output file)"; return 1; }
   fi
   [[ -f "$OUT_FILE" ]] || { _pfail "gemini: output not created: $OUT_FILE"; return 1; }
+  if finalize_copywriter_output "$OUT_FILE"; then
+    return 0
+  fi
+  local repair_prompt
+  repair_prompt="Rewrite post.md ONLY as the final Traditional Chinese (zh-TW) social post per ${SKILL_DIR}/TEMPLATE.md and TASK.md. No English status report. No mention of files or verification steps. Overwrite post.md completely using write_file."
+  run_gemini_prompt "$repair_prompt" || { _pfail "gemini: post.md quality check failed; repair failed"; return 1; }
+  finalize_copywriter_output "$OUT_FILE" || { _pfail "gemini: post.md failed quality check after repair"; return 1; }
 }
 
 FAILOVER_LOG="${DATA_ROOT}/logs/engine_failover.jsonl"
 mkdir -p "$(dirname "$FAILOVER_LOG")"
 
 DEFAULT_COPY_FALLBACK="claude_cli gemini_cli codex_cli"
-DEFAULT_SVG_FALLBACK="codex_cli gemini_cli claude_cli"
+DEFAULT_SVG_FALLBACK="gemini_cli claude_cli"
 
 log_failover() {
   local provider="$1" attempt="$2" ok="$3" err="${4:-}"
@@ -494,7 +652,8 @@ invoke_provider() {
       esac
       ;;
     svg_artist)
-      OUT_FILE="${RUN_DIR}/art.svg"
+      # Keep --out-file carousel/NN.png; do not reset to post.png mid-carousel.
+      [[ -z "$IMAGE_OUT_FILE" ]] && OUT_FILE="${RUN_DIR}/post.png"
       case "$p" in
         codex_cli) invoke_codex_cli ;;
         gemini_cli) invoke_gemini_cli ;;
@@ -524,21 +683,35 @@ invoke_with_failover() {
   local attempt=0
   local last_err="no provider succeeded"
   for p in $chain; do
+    case "$p" in
+      claude_cli) command -v claude >/dev/null 2>&1 || continue ;;
+      codex_cli) command -v codex >/dev/null 2>&1 || continue ;;
+      gemini_cli) command -v gemini >/dev/null 2>&1 || continue ;;
+    esac
     attempt=$((attempt + 1))
     if ! invoke_provider "$p"; then
       last_err="${p} failed"
       log_failover "$p" "$attempt" false "$last_err"
       continue
     fi
-    if [[ "$ENGINE" == "copywriter" && ! -s "$OUT_FILE" ]]; then
-      last_err="${p} empty output"
-      log_failover "$p" "$attempt" false "$last_err"
-      continue
+    if [[ "$ENGINE" == "copywriter" ]]; then
+      if [[ ! -s "$OUT_FILE" ]]; then
+        last_err="${p} empty output"
+        log_failover "$p" "$attempt" false "$last_err"
+        continue
+      fi
+      if ! finalize_copywriter_output "$OUT_FILE"; then
+        last_err="${p} invalid post.md (meta chatter or insufficient zh-TW copy)"
+        log_failover "$p" "$attempt" false "$last_err"
+        continue
+      fi
     fi
-    if [[ "$ENGINE" == "svg_artist" ]] && ! svg_is_valid "$OUT_FILE"; then
-      last_err="${p} invalid svg"
-      log_failover "$p" "$attempt" false "$last_err"
-      continue
+    if [[ "$ENGINE" == "svg_artist" ]]; then
+      if ! svg_output_ready; then
+        last_err="${p} missing or invalid image at ${OUT_FILE}"
+        log_failover "$p" "$attempt" false "$last_err"
+        continue
+      fi
     fi
     log_failover "$p" "$attempt" true ""
     printf '{"ok":true,"path":"%s","provider_used":"%s"}\n' "$OUT_FILE" "$p"

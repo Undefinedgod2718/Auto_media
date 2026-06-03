@@ -74,10 +74,21 @@ bash scripts/enforce_telegram_gateway.sh
 
 ### 本機無 HTTPS 的替代（dev）
 
-不跑 `setWebhook`，改常駐 poll：
+不跑 `setWebhook`，改常駐 poll。安裝精靈會在無 `WEBHOOK_URL` 時自動處理（見 [INSTALL.md](INSTALL.md) § HITL）。
+
+**Preferred:**
+
 ```bash
-GATEWAY_URL=http://localhost:8787 bash scripts/telegram_poll_forwarder.sh
-# getUpdates → POST Gateway /telegram（自動帶 X-Telegram-Bot-Api-Secret-Token）
+bash scripts/setup_wizard.sh          # ends with forwarder or hitl setup
+# or manually:
+docker compose --profile forwarder up -d forwarder
+bash scripts/forwarder_ctl.sh start     # host fallback if compose profile unavailable
+```
+
+**Debug only** (single-shot, not supervised):
+
+```bash
+bash scripts/telegram_poll_forwarder.sh
 ```
 
 ---

@@ -49,6 +49,12 @@ else
   check fail python3 "python3 required for amctl apply"
 fi
 
+if command -v curl >/dev/null 2>&1; then
+  check pass curl "$(curl --version 2>&1 | head -1)"
+else
+  check fail curl "curl required for verify scripts and Telegram/Meta checks"
+fi
+
 if command -v jq >/dev/null 2>&1; then
   check pass jq "$(jq --version 2>&1)"
 else

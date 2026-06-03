@@ -6,7 +6,7 @@
 
 | 位置 | 安裝方式 |
 |------|----------|
-| Dev Container | `post-create.sh`：`npm install -g @google/gemini-cli@latest`（`INSTALL_GEMINI=true`） |
+| Dev Container | `post-create.sh`：`npm install -g @google/gemini-cli@0.44.1`（`INSTALL_GEMINI=true`） |
 | n8n 產線映像 | [`docker/n8n/Dockerfile`](../docker/n8n/Dockerfile) 已 bake `@google/gemini-cli` |
 
 變更 n8n Dockerfile 後需 **rebuild**：
@@ -56,8 +56,9 @@ docker compose restart n8n
 
 [`scripts/lib/invoke-engine.sh`](../scripts/lib/invoke-engine.sh) 使用 headless 旗標：
 
-- `gemini -p "<prompt>" -y --skip-trust`（headless 必加 `--skip-trust` 或 `GEMINI_CLI_TRUST_WORKSPACE=true`）
-- **不可**與 `--approval-mode` 同時使用 `-y`
+- `invoke-engine.sh` 使用：`cd $RUN_DIR` + `gemini -p "..." -y --skip-trust --include-directories /data/runs,...`
+- headless 需 `GEMINI_CLI_TRUST_WORKSPACE=true`（`.env` 預設已開）
+- `-y` 即 YOLO（自動核准 write_file）；勿讓 agent 呼叫 `activate_skill`（prompt 已禁止）
 - 若未落檔，fallback：stdout 重導至輸出檔
 
 Skill 目錄沿用 `claude_copywriter`（文案）與 `codex_svg_artist`（SVG），無需另建 gemini skill 樹。

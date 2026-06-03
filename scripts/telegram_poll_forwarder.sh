@@ -7,7 +7,12 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 [[ -f "$ROOT/.env" ]] && set -a && source "$ROOT/.env" && set +a
 
 : "${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN missing}"
-GATEWAY_BASE="${GATEWAY_URL:-}"
+source "$(dirname "${BASH_SOURCE[0]}")/lib/gateway_url.sh"
+
+GATEWAY_BASE=""
+if [[ -n "${GATEWAY_URL:-}" ]] || [[ -n "${GATEWAY_POLL_URL:-}" ]]; then
+  GATEWAY_BASE="$(gateway_url_resolve)"
+fi
 if [[ -n "$GATEWAY_BASE" ]]; then
   # Gateway endpoint is /telegram (not /webhook/...); requires the secret header.
   TARGET_URL="${GATEWAY_BASE%/}/telegram"
@@ -22,7 +27,9 @@ OFFSET_FILE="${ROOT}/data/hitl/telegram_poll_offset.txt"
 mkdir -p "$(dirname "$OFFSET_FILE")"
 
 offset=""
-[[ -f "$OFFSET_FILE" ]] && offset="$(cat "$OFFSET_FILE")"
+if [[ -f "$OFFSET_FILE" ]]; then
+  offset="$(tr -d '\r\n' < "$OFFSET_FILE")"
+fi
 
 query="limit=20&timeout=0&allowed_updates[]=callback_query&allowed_updates[]=message"
 [[ -n "$offset" ]] && query="${query}&offset=${offset}"
@@ -31,10 +38,10 @@ resp="$(curl -fsS "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates?
 count="$(echo "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('result',[])))")"
 [[ "$count" == "0" ]] && { echo "No new Telegram updates."; exit 0; }
 
-echo "$resp" | python3 - "$TARGET_URL" "$TG_SECRET" "$OFFSET_FILE" <<'PY'
-import json, sys, urllib.request, urllib.error
+RESPONSE="$resp" python3 - "$TARGET_URL" "$TG_SECRET" "$OFFSET_FILE" <<'PY'
+import json, os, sys, urllib.request, urllib.error
 
-data = json.load(sys.stdin)
+data = json.loads(os.environ["RESPONSE"])
 url, tg_secret, offset_file = sys.argv[1:4]
 headers = {"Content-Type": "application/json"}
 if tg_secret:
@@ -51,7 +58,7 @@ for u in data.get("result", []):
         print(f"update {u.get('update_id')}: HTTP {e.code} {e.read().decode(errors='replace')[:200]}")
 
 if max_id:
-    with open(offset_file, "w") as f:
+    with open(offset_file, "w", encoding="utf-8", newline="\n") as f:
         f.write(str(max_id + 1))
     print(f"Next offset: {max_id + 1}")
 PY

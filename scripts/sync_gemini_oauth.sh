@@ -28,4 +28,4 @@ if [[ ! -f "${DEST}/oauth_creds.json" ]]; then
   exit 1
 fi
 
-echo '{"ok":true,"dest":"'"$DEST"'","hint":"docker compose restart n8n"}'
+echo '{"ok":true,"dest":"'"$DEST"'","hint":"./scripts/inject_n8n_secrets.sh (Docker Desktop may not show bind-mount files in n8n until inject)"}'

@@ -50,7 +50,7 @@ install_gemini_fallback() {
   # shellcheck source=/dev/null
   [[ -s "$NVM_DIR/nvm.sh" ]] && . "$NVM_DIR/nvm.sh"
   if command -v npm >/dev/null 2>&1; then
-    npm install -g @google/gemini-cli@latest
+    npm install -g @google/gemini-cli@0.44.1
   else
     echo "warn: npm missing; skip gemini fallback" >&2
     return 1

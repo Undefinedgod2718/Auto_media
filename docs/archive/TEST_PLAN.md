@@ -1,3 +1,5 @@
+> **Archived.** Current docs: [INSTALL.md](../INSTALL.md), [VERIFY.md](../VERIFY.md), or [README.md#architecture](../../README.md#architecture).
+
 # Auto Media 測試計劃與上線啟動
 
 本文件定義可在本機與容器執行的最小上線驗證路徑，目標是先確保產線「可跑、可回退、可觀測」。

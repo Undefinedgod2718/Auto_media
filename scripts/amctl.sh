@@ -58,6 +58,46 @@ cmd_status() {
   bash "${REPO_ROOT}/scripts/env-check.sh" || true
 }
 
+cmd_doctor() {
+  echo "=== Auto Media doctor ==="
+  local failures=0
+  local checks=(
+    "scripts/env-check.sh"
+    "scripts/check_eol.sh"
+    "scripts/verify_meta_tokens.sh"
+    "scripts/verify_gateway_platform_flow.sh"
+  )
+  for c in "${checks[@]}"; do
+    if [[ -x "${REPO_ROOT}/${c}" ]]; then
+      echo "--- ${c} ---"
+      if ! bash "${REPO_ROOT}/${c}"; then
+        failures=$((failures + 1))
+      fi
+    fi
+  done
+  if [[ -x "${REPO_ROOT}/scripts/ensure_n8n_oauth.sh" ]]; then
+    echo "--- scripts/ensure_n8n_oauth.sh ---"
+    bash "${REPO_ROOT}/scripts/ensure_n8n_oauth.sh" || failures=$((failures + 1))
+  fi
+  if [[ -x "${REPO_ROOT}/scripts/verify_n8n_cli_auth.sh" ]]; then
+    echo "--- scripts/verify_n8n_cli_auth.sh (warn-only) ---"
+    VERIFY_CLI_STRICT=0 bash "${REPO_ROOT}/scripts/verify_n8n_cli_auth.sh" || failures=$((failures + 1))
+  fi
+  if [[ -x "${REPO_ROOT}/scripts/verify_telegram.sh" ]]; then
+    echo "--- scripts/verify_telegram.sh (warn-only) ---"
+    VERIFY_TELEGRAM_STRICT=0 bash "${REPO_ROOT}/scripts/verify_telegram.sh" || failures=$((failures + 1))
+  fi
+  if [[ -x "${REPO_ROOT}/scripts/verify_n8n_claude_engine.sh" ]]; then
+    echo "--- scripts/verify_n8n_claude_engine.sh ---"
+    bash "${REPO_ROOT}/scripts/verify_n8n_claude_engine.sh" || failures=$((failures + 1))
+  fi
+  if [[ "$failures" -gt 0 ]]; then
+    echo "doctor: ${failures} check(s) failed" >&2
+    return 1
+  fi
+  echo "doctor: ok"
+}
+
 set_yaml_ui() {
   local ui="$1"
   python3 - "$PLATFORM_YAML" "$ui" <<'PY'
@@ -95,11 +135,14 @@ validate_skill_dir() {
   [[ -d "$dir" ]] || { echo "missing skill: $name"; return 1; }
   local ok=0
   if [[ -f "$dir/SKILL.md" ]]; then ok=1; fi
-  if [[ "$name" == *copywriter* ]]; then
+  if [[ "$name" == *copywriter* || "$name" == *_writer ]]; then
     [[ -f "$dir/BRAND.md" && -f "$dir/TEMPLATE.md" ]] || { echo "$name: need BRAND.md TEMPLATE.md"; return 1; }
   fi
   if [[ "$name" == *svg* ]]; then
     [[ -f "$dir/PALETTE.md" && -f "$dir/RULES.md" ]] || { echo "$name: need PALETTE.md RULES.md"; return 1; }
+  fi
+  if [[ "$name" == *_artist ]]; then
+    [[ -f "$dir/VISUAL_BASE.md" && -f "$dir/PAGE_TYPES.md" ]] || { echo "$name: need VISUAL_BASE.md PAGE_TYPES.md"; return 1; }
   fi
   [[ $ok -eq 1 ]] || { echo "$name: missing SKILL.md"; return 1; }
   echo "skill ok: $name"
@@ -207,7 +250,8 @@ main() {
     engine) cmd_engine "$@" ;;
     env|check) bash "${REPO_ROOT}/scripts/env-check.sh" ;;
     supervisor|planb) cmd_supervisor ;;
-    *) echo "usage: amctl apply|status|ui|skill|publish|engine|supervisor|env"; exit 1 ;;
+    doctor) cmd_doctor ;;
+    *) echo "usage: amctl apply|status|ui|skill|publish|engine|supervisor|doctor|env"; exit 1 ;;
   esac
 }
 

@@ -14,6 +14,8 @@ orchestration:
   supervisor: hermes
 
 # Legal engine providers: claude_cli | codex_cli | gemini_cli
+# Global copy/svg below are consumed by scripts/lib/invoke-engine.sh.
+# engines.platforms.*.writer/artist provider+fallback are NOT read by invoke-engine (skill_mount only).
 engines:
   copy:
     provider: claude_cli
@@ -36,6 +38,46 @@ engines:
   render:
     provider: rsvg
     binary: rsvg-convert
+  platforms:
+    threads:
+      writer:
+        provider: claude_cli
+        skill_mount: threads_writer
+        fallback:
+          - gemini_cli
+          - codex_cli
+      artist:
+        provider: codex_cli
+        skill_mount: threads_artist
+        fallback:
+          - gemini_cli
+          - claude_cli
+    instagram:
+      writer:
+        provider: claude_cli
+        skill_mount: instagram_writer
+        fallback:
+          - gemini_cli
+          - codex_cli
+      artist:
+        provider: codex_cli
+        skill_mount: instagram_artist
+        fallback:
+          - gemini_cli
+          - claude_cli
+    facebook:
+      writer:
+        provider: claude_cli
+        skill_mount: facebook_writer
+        fallback:
+          - gemini_cli
+          - codex_cli
+      artist:
+        provider: codex_cli
+        skill_mount: facebook_artist
+        fallback:
+          - gemini_cli
+          - claude_cli
 
 publish:
   mode: auto

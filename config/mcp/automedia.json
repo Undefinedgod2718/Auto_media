@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "automedia": {
+      "command": "python3",
+      "args": ["/workspaces/Auto_media/scripts/mcp_automedia.py"],
+      "env": {
+        "AUTO_MEDIA_ROOT": "/workspaces/Auto_media",
+        "DATA_ROOT": "/workspaces/Auto_media/data",
+        "AUTO_MEDIA_MCP_WRITE": "0"
+      }
+    }
+  }
+}

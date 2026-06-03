@@ -1,3 +1,5 @@
+> **Archived.** Current docs: [INSTALL.md](../INSTALL.md), [VERIFY.md](../VERIFY.md), or [README.md#architecture](../../README.md#architecture).
+
 # Auto Media — Architecture (ADD summary)
 
 Self-hosted social image/text pipeline: **n8n** orchestration, **file-based Skills** (open-design), **Hermes** Plan B supervisor.

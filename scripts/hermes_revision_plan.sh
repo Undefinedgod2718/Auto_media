@@ -40,7 +40,7 @@ else:
     suggestions.extend(assessment.get("suggestions") or ["依品牌語氣優化文案並補強 CTA"])
 
 text = feedback.lower()
-if any(k in text for k in ["圖", "svg", "視覺", "重畫"]):
+if any(k in text for k in ["圖", "svg", "視覺", "重畫", "ig", "instagram", "insta", "輪播", "圖片"]):
     rerun = "full"
 elif any(k in text for k in ["排版", "圖片"]):
     rerun = "copy_render"
