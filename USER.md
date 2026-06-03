@@ -2,24 +2,18 @@
 
 This guide is for daily operation without editing code.
 
+## 0) First-time install (guided)
+
+```bash
+bash scripts/setup_wizard.sh --dry-run   # check only, no file changes
+bash scripts/setup_wizard.sh             # full install
+```
+
+Script details (OAuth, HITL, forwarder): [docs/INSTALL.md](docs/INSTALL.md). Verification checklist: [docs/VERIFY.md](docs/VERIFY.md).
+
 ## 1) Open user interface
 
-```bash
-bash scripts/open_user_ui.sh
-```
-
-Or:
-
-```bash
-scripts/am-user open
-```
-
-If browser does not auto-open, open:
-
-- `http://127.0.0.1:8790/user`
-- Token settings: `http://127.0.0.1:8790/settings`
-
-Settings page must show `port 8790` and `.env: .../Auto_media/.env`. Port **8788** was removed (old docker dashboard).
+Use dashboard **8790** only; port **8788** is obsolete. Start, restart, and diagnose: [docs/INSTALL.md](docs/INSTALL.md) § User console (`bash scripts/open_user_ui.sh`, `bash scripts/check_dashboard.sh`).
 
 ## 2) Fill tokens safely
 
@@ -69,17 +63,20 @@ This prints environment checks with sensitive key-style patterns redacted.
 - `ANTHROPIC_API_KEY`
 - `CLAUDE_CODE_OAUTH_TOKEN`
 - `GEMINI_API_KEY`
-- `AUTO_MEDIA_DASHBOARD_WRITE_PIN` (Skill Manager unlock; min 8 characters)
+- `AUTO_MEDIA_DASHBOARD_WRITE_PIN` (optional; default unlock `12345678` if unset)
 
 ## 6) Skill Manager (read-only by default)
 
-1. Open **Token Settings** (`http://127.0.0.1:8790/settings`) and set **AUTO_MEDIA_DASHBOARD_WRITE_PIN** (at least 8 characters). Save.
-2. Open **Skill Manager** (`http://127.0.0.1:8790/skills`).
-3. Enter the same PIN and click **解鎖** (Unlock). Status shows **可寫入**.
-4. Edit platform mapping or skill files, then **儲存對應** / **儲存檔案**.
-5. Click **鎖定** when finished, or close the browser tab (unlock lasts about 8 hours on this machine).
+1. Open **Skill Manager** (`http://127.0.0.1:8790/skills`) or **引擎優先權** (`/engines`).
+2. Enter PIN (default **`12345678`** until you save a custom PIN in Settings) and click **解鎖**. Status shows **可寫入**.
+3. Edit mapping or files, then **儲存** — the page reloads automatically on success.
+4. To change PIN: **權杖設定** → `AUTO_MEDIA_DASHBOARD_WRITE_PIN` (≥8 chars) → Save → unlock again with the new PIN.
 
 Engineers only: `AUTO_MEDIA_DASHBOARD_WRITE=1` when starting the dashboard skips PIN (local dev).
+
+## 6b) Engine priority (copy / svg)
+
+Open **引擎優先權** (`http://127.0.0.1:8790/engines`). Unlock with the same PIN as Skill Manager, set **文案** / **圖像** provider order, **儲存**. Failover: [docs/ENGINE_FAILOVER.md](docs/ENGINE_FAILOVER.md).
 
 ## 7) Common issues
 

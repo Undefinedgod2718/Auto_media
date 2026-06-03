@@ -14,6 +14,18 @@ is_meta_token_skip_msg() {
   return 1
 }
 
+# Page publish permission (#200) — skip so n8n node exits 0; see publish_facebook.json reason.
+is_meta_publish_permission_skip_msg() {
+  local msg="${1,,}"
+  [[ -n "$msg" ]] || return 1
+  case "$msg" in
+    *pages_manage_posts*) return 0 ;;
+    *pages_read_engagement*) return 0 ;;
+    *"sufficient administrative permission"*) return 0 ;;
+  esac
+  return 1
+}
+
 # Instagram / Facebook Graph page publish requires a Page access token (usually EAA...).
 is_page_access_token() {
   local tok="$1"

@@ -3,9 +3,11 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# shellcheck source=/dev/null
-[[ -f "$ROOT/.env" ]] && set -a && source "$ROOT/.env" && set +a
-source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
+SCRIPT_LIB="$(dirname "${BASH_SOURCE[0]}")/lib"
+# shellcheck source=lib/load_env.sh
+source "${SCRIPT_LIB}/load_env.sh"
+load_repo_env "$ROOT"
+source "${SCRIPT_LIB}/common.sh"
 
 RUN_ID=""
 IMAGE_URL=""

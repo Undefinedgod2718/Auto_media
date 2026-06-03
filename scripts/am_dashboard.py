@@ -33,6 +33,8 @@ SKILL_AUDIT_LOG = DATA / "logs" / "skill_admin.jsonl"
 SKILL_LOCK = DATA / "locks" / "dashboard-skill-edit.lock"
 PLATFORMS = ("instagram", "threads", "facebook")
 ARTIFACTS = ("writer", "artist")
+ENGINE_SLOTS = ("copy", "svg")
+ENGINE_PROVIDERS = ("claude_cli", "codex_cli", "gemini_cli")
 MAX_SKILL_FILE_BYTES = 256 * 1024
 WRITER_FILES = (
     "SKILL.md",
@@ -49,7 +51,8 @@ LEGACY_ARTIST_FILES = (
     "RULES.md",
 )
 CSRF_TOKEN = secrets.token_urlsafe(24)
-INSTANCE_REV = "settings-ssr-20260603"
+INSTANCE_REV = "ui-clean-20260603"
+DEFAULT_WRITE_PIN = "12345678"
 WRITE_PIN_ENV = "AUTO_MEDIA_DASHBOARD_WRITE_PIN"
 WRITE_SESSION_COOKIE = "am_write_session"
 WRITE_SESSION_TTL_S = 8 * 3600
@@ -67,6 +70,7 @@ import sys
 sys.path.insert(0, str(ROOT / "scripts" / "lib"))
 from env_store import parse_env, schema_payload, status_payload, update_env  # noqa: E402
 from secret_tests import run_group  # noqa: E402
+from version_store import list_versions, restore_snapshot, snapshot_file  # noqa: E402
 
 
 def run(cmd: list[str]) -> tuple[int, str]:
@@ -102,9 +106,11 @@ def _dev_write_bypass() -> bool:
     return os.environ.get("AUTO_MEDIA_DASHBOARD_WRITE", "0") == "1"
 
 
-def _configured_write_pin() -> str | None:
+def _configured_write_pin() -> str:
     pin = (_load_env_values().get(WRITE_PIN_ENV) or "").strip()
-    return pin if len(pin) >= WRITE_PIN_MIN_LEN else None
+    if len(pin) >= WRITE_PIN_MIN_LEN:
+        return pin
+    return DEFAULT_WRITE_PIN
 
 
 def _purge_write_sessions(now: float | None = None) -> None:
@@ -300,9 +306,66 @@ def _replace_platform_mapping(data: dict, mapping: dict[str, dict[str, str]]) ->
     return data
 
 
-def _save_platform_config_atomic(data: dict) -> None:
+def _version_snapshot(target: str, path: Path, reason: str) -> None:
+    try:
+        snapshot_file(DATA, target, path, actor="console", reason=reason, repo=ROOT)
+    except OSError:
+        pass
+
+
+def _save_platform_config_atomic(data: dict, *, snapshot_reason: str = "platform_save") -> None:
+    if PLATFORM_YAML.is_file():
+        _version_snapshot("config/platform.yaml", PLATFORM_YAML, snapshot_reason)
     text = _yaml().safe_dump(data, allow_unicode=True, sort_keys=False)
     _write_text_atomic(PLATFORM_YAML, text)
+
+
+def _engines_from_config(data: dict | None = None) -> dict[str, dict[str, object]]:
+    cfg = data if data is not None else _load_platform_config()
+    engines = cfg.get("engines") if isinstance(cfg.get("engines"), dict) else {}
+    out: dict[str, dict[str, object]] = {}
+    for slot in ENGINE_SLOTS:
+        row = engines.get(slot) if isinstance(engines, dict) else {}
+        if not isinstance(row, dict):
+            row = {}
+        out[slot] = {
+            "provider": str(row.get("provider") or ""),
+            "fallback": list(row.get("fallback") or []),
+            "skill_mount": str(row.get("skill_mount") or ""),
+        }
+    return out
+
+
+def _replace_global_engines(data: dict, payload: dict[str, object]) -> dict:
+    engines = data.setdefault("engines", {})
+    if not isinstance(engines, dict):
+        raise ValueError("engines must be a mapping")
+    for slot in ENGINE_SLOTS:
+        spec = payload.get(slot)
+        if not isinstance(spec, dict):
+            continue
+        row = engines.setdefault(slot, {})
+        if not isinstance(row, dict):
+            raise ValueError(f"engines.{slot} must be a mapping")
+        prov = str(spec.get("provider", "")).strip()
+        if prov not in ENGINE_PROVIDERS:
+            raise ValueError(f"invalid provider for {slot}: {prov}")
+        fb_raw = spec.get("fallback") or []
+        if not isinstance(fb_raw, list):
+            raise ValueError(f"engines.{slot}.fallback must be a list")
+        fallback = [str(p) for p in fb_raw if str(p) in ENGINE_PROVIDERS and str(p) != prov]
+        row["provider"] = prov
+        row["fallback"] = fallback
+    return data
+
+
+def _engines_schema_payload(handler: BaseHTTPRequestHandler) -> dict[str, object]:
+    return {
+        "providers": list(ENGINE_PROVIDERS),
+        "engines": _engines_from_config(),
+        "write_enabled": _write_enabled_for(handler),
+        "note": "Per-platform engines.platforms.* provider/fallback are not consumed by invoke-engine.sh (skill_mount only).",
+    }
 
 
 def _skills_schema_payload(handler: BaseHTTPRequestHandler) -> dict[str, object]:
@@ -319,7 +382,7 @@ def _skills_schema_payload(handler: BaseHTTPRequestHandler) -> dict[str, object]
             artist_options.append(d.name)
     return {
         "write_enabled": _write_enabled_for(handler),
-        "pin_configured": _configured_write_pin() is not None,
+        "pin_configured": True,
         "mapping": _current_platform_mapping(),
         "options": {"writer": writer_options, "artist": artist_options},
         "skills": skills,
@@ -377,58 +440,56 @@ def _audit_skill(action: str, success: bool, client_ip: str, **details: object) 
         f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
-def _n8n_cli_check() -> tuple[dict[str, str], list[str]]:
-    checks: dict[str, str] = {}
+def cli_auth_status() -> dict[str, object]:
+    rc, out = run_safe(["bash", "scripts/verify_n8n_cli_auth.sh"], timeout_s=30)
     next_steps: list[str] = []
-
-    rc_claude, out_claude = run_safe(["bash", "scripts/verify_n8n_claude_engine.sh"], timeout_s=20)
-    checks["claude"] = "PASS n8n claude auth ready" if rc_claude == 0 else f"WARN {out_claude[:240]}"
-    if rc_claude != 0:
+    parsed: dict[str, object] = {}
+    try:
+        parsed = json.loads(out.splitlines()[-1] if out else "{}")
+    except json.JSONDecodeError:
+        parsed = {"ok": rc == 0, "raw": out[:500]}
+    ok = bool(parsed.get("ok")) if parsed else rc == 0
+    if not ok:
         next_steps.extend(
             [
-                "Run: bash scripts/sync_claude_oauth.sh",
-                "Run: bash scripts/inject_n8n_secrets.sh",
+                "bash scripts/sync_claude_oauth.sh",
+                "bash scripts/sync_codex_oauth.sh",
+                "bash scripts/sync_gemini_oauth.sh",
+                "bash scripts/ensure_n8n_oauth.sh",
+                "sudo docker compose up -d n8n",
             ]
         )
-
-    # n8n image bakes gemini/codex CLIs in Dockerfile (codex via INSTALL_CODEX=true).
-    checks["codex"] = "PASS n8n codex binary baked (INSTALL_CODEX=true)"
-    checks["gemini"] = "PASS n8n gemini binary baked (npm global)"
-
-    secrets_root = DATA / "secrets"
-    codex_auth = (secrets_root / "codex" / "auth.json").is_file()
-    gemini_auth = (secrets_root / "gemini" / "oauth_creds.json").is_file() or (
-        secrets_root / "gemini" / "google_accounts.json"
-    ).is_file()
-    if codex_auth:
-        checks["codex"] += " + oauth"
-    else:
-        checks["codex"] += " (oauth missing?)"
-        next_steps.append("Run: bash scripts/sync_codex_oauth.sh")
-    if gemini_auth:
-        checks["gemini"] += " + oauth"
-    else:
-        checks["gemini"] += " (oauth missing?)"
-        next_steps.append("Run: bash scripts/sync_gemini_oauth.sh")
-    if not (codex_auth and gemini_auth):
-        next_steps.append("Run: bash scripts/inject_n8n_secrets.sh")
-
-    return checks, list(dict.fromkeys(next_steps))
-
-
-def cli_auth_status() -> dict[str, object]:
-    checks, next_steps = _n8n_cli_check()
-    bad = [k for k, v in checks.items() if ("WARN" in v or not v)]
-    out = json.dumps({"checks": checks}, ensure_ascii=False)
-    if bad:
-        next_steps.append("Restart n8n: sudo docker compose up -d n8n")
+        hints = parsed.get("hints")
+        if isinstance(hints, list):
+            next_steps.extend(str(h) for h in hints)
     return {
-        "ok": len(bad) == 0,
+        "ok": ok,
         "check": "cli-auth",
-        "checks": checks,
         "output": out,
+        "parsed": parsed,
         "next_steps": list(dict.fromkeys(next_steps)),
     }
+
+
+def telegram_check_status() -> dict[str, object]:
+    rc, out = run_safe(["bash", "scripts/verify_telegram.sh"], timeout_s=25)
+    parsed: dict[str, object] = {}
+    try:
+        for line in reversed(out.splitlines()):
+            line = line.strip()
+            if line.startswith("{"):
+                parsed = json.loads(line)
+                break
+    except json.JSONDecodeError:
+        parsed = {}
+    ok = bool(parsed.get("ok")) if parsed else rc == 0
+    next_steps = []
+    if not ok:
+        next_steps = [
+            "http://127.0.0.1:8790/settings — save TELEGRAM_*",
+            "sudo docker compose up -d n8n gateway",
+        ]
+    return {"ok": ok, "check": "telegram", "output": out, "parsed": parsed, "next_steps": next_steps}
 
 
 def redact_secrets(text: str) -> str:
@@ -545,42 +606,223 @@ def _load_env_values() -> dict[str, str]:
     return values
 
 
+def _instance_meta() -> dict[str, object]:
+    return {
+        "ok": True,
+        "service": "am-dashboard",
+        "port": PORT,
+        "instance_rev": INSTANCE_REV,
+        "root": str(ROOT.resolve()),
+        "env_path": str(ENV_PATH.resolve()),
+        "pid": os.getpid(),
+    }
+
+
+def _tip(text: str) -> str:
+    return f'<span class="tip" title="{html.escape(text)}">ⓘ</span>'
+
+
+_DASH_PAGE_STYLE = """
+.tip { cursor: help; color: #888; font-size: 0.9em; margin-left: 0.35em; user-select: none; }
+"""
+
+_DASH_COMMON_JS = """
+function reloadAfterSave(ok) {
+  if (ok) location.reload();
+}
+"""
+
+_DASH_UNLOCK_JS = """
+async function unlockWrite() {
+  const pin = document.getElementById('pinIn').value;
+  const resp = await fetch('/api/skills/unlock', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json','X-CSRF-Token':csrf},
+    body: JSON.stringify({pin})
+  });
+  const data = await resp.json();
+  if (!resp.ok || !data.ok) {
+    return {ok: false, data: data};
+  }
+  document.getElementById('pinIn').value = '';
+  return {ok: true, data: data};
+}
+async function lockWrite() {
+  await fetch('/api/skills/lock', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json','X-CSRF-Token':csrf},
+    body: '{}'
+  });
+}
+"""
+
+
 def _dashboard_html(rc: int, status_out: str) -> str:
     runs = list_runs()
     runs_html = "".join(
         f"<tr><td>{html.escape(r['run_id'])}</td><td>{html.escape(r['stage'])}</td></tr>"
         for r in runs
     )
+    tip = _tip("工程師用總覽；日常操作請用使用者主控台。")
     return f"""<!doctype html>
-<html><head><meta charset="utf-8"><title>Auto Media Dashboard</title></head>
+<html><head><meta charset="utf-8"><title>Auto Media Dashboard</title>
+<style>{_DASH_PAGE_STYLE}</style></head>
 <body>
-  <h2>Auto Media Dashboard (localhost)</h2>
+  <h2>Auto Media Dashboard{tip}</h2>
   <p>Health: {'OK' if rc == 0 else 'WARN'}</p>
-  <p><a href="/user">User mode</a> | <a href="/settings">Token settings</a> | <a href="/skills">Skill manager</a></p>
+  <p><a href="/user">使用者主控台</a> | <a href="/settings">權杖設定</a> |
+     <a href="/skills">Skill 管理</a> | <a href="/engines">引擎優先權</a></p>
   <h3>Environment / Auth</h3>
   <pre>{html.escape(status_out)}</pre>
   <h3>Recent Runs</h3>
   <table border="1" cellpadding="6"><tr><th>run_id</th><th>stage</th></tr>{runs_html}</table>
-  <h3>MCP</h3>
-  <p>Use <code>scripts/mcp_automedia.py</code> with <code>AUTO_MEDIA_MCP_WRITE=0</code> by default.</p>
 </body></html>"""
 
 
 def _user_html() -> str:
-    return """<!doctype html>
-<html><head><meta charset="utf-8"><title>Auto Media User Console</title></head>
+    return f"""<!doctype html>
+<html><head><meta charset="utf-8"><title>Auto Media User Console</title>
+<style>{_DASH_PAGE_STYLE}</style></head>
 <body>
-  <h2>Auto Media User Console</h2>
-  <p>For non-engineers. Localhost only.</p>
+  <h2>使用者主控台</h2>
   <ul>
-    <li><a href="/settings">1) Fill tokens safely</a></li>
-    <li><a href="/api/status">2) Check environment/auth status</a></li>
-    <li><a href="/api/check/cli-auth">3) Check CLI auth readiness</a></li>
-    <li><a href="/api/check/meta">4) Check Meta/IG/Threads token readiness</a></li>
-    <li><a href="/api/runs">5) View recent run stages</a></li>
-    <li><a href="/skills">6) Skill manager (writer/artist)</a></li>
+    <li><a href="/settings">1) 權杖設定</a></li>
+    <li><a href="/api/status">2) 環境／授權狀態</a></li>
+    <li><a href="/api/check/cli-auth">3) CLI 授權</a></li>
+    <li><a href="/api/check/meta">4) Meta／IG／Threads</a></li>
+    <li><a href="/api/runs">5) 最近執行</a></li>
+    <li><a href="/skills" title="各平台 skill 對應；不變更 LLM 順序">6) Skill 管理</a></li>
+    <li><a href="/engines" title="全域文案／圖像 CLI 優先順序">7) 引擎優先權</a></li>
+    <li><a href="/api/check/telegram">8) Telegram／Gateway</a></li>
   </ul>
-  <p>Need details? See <code>USER.md</code>.</p>
+</body></html>"""
+
+
+def _engines_html() -> str:
+    eng_tip = _tip("調整全域文案與圖像 CLI 順序；與 Skill 平台對應無關。改 PIN 後請重新解鎖。")
+    return f"""<!doctype html>
+<html><head><meta charset="utf-8"><title>引擎優先權</title>
+<style>
+  body {{ font-family: system-ui, sans-serif; margin: 16px; max-width: 900px; }}
+  {_DASH_PAGE_STYLE}
+  .toolbar {{ display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 12px; }}
+  .badge {{ padding: 4px 10px; border-radius: 4px; font-weight: 600; font-size: 13px; }}
+  .badge-ro {{ background: #eee; color: #333; }}
+  .badge-wr {{ background: #d1fae5; color: #065f46; }}
+  .unlock-row {{ display: flex; align-items: center; gap: 6px; }}
+  table {{ border-collapse: collapse; width: 100%; margin: 8px 0; }}
+  th, td {{ border: 1px solid #ccc; padding: 6px; text-align: left; }}
+  .btn {{ padding: 6px 12px; cursor: pointer; margin-right: 6px; }}
+  #result {{ margin-top: 10px; font-size: 13px; white-space: pre-wrap; background: #f4f4f5; padding: 8px; display: none; }}
+</style></head>
+<body>
+  <div class="toolbar">
+    <a href="/user">返回</a>
+    <span id="modeBadge" class="badge badge-ro">唯讀</span>
+    <span id="unlockWrap" class="unlock-row">
+      <input type="password" id="pinIn" placeholder="PIN" size="14"
+        title="預設 12345678；可於權杖設定修改" />
+      <button type="button" class="btn" id="btnUnlock" onclick="doUnlock()"
+        title="驗證後 8 小時內可儲存">解鎖</button>
+    </span>
+    <button type="button" class="btn" id="btnLock" onclick="doLock()" style="display:none"
+      title="立即回到唯讀">鎖定</button>
+  </div>
+  <h2>引擎優先權{eng_tip}</h2>
+  <p id="mode"></p>
+  <div id="slots"></div>
+  <button type="button" class="btn" id="btnSave" disabled onclick="saveEngines()"
+    title="寫入 platform.yaml 並 apply">儲存</button>
+  <pre id="result"></pre>
+<script>
+const csrf = "{CSRF_TOKEN}";
+let schema = null;
+const providers = ['claude_cli','codex_cli','gemini_cli'];
+const slotLabels = {{ copy: '文案', svg: '圖像' }};
+{_DASH_COMMON_JS}
+{_DASH_UNLOCK_JS}
+
+function applyEnginesWriteMode(enabled) {{
+  const badge = document.getElementById('modeBadge');
+  const unlockWrap = document.getElementById('unlockWrap');
+  const btnLock = document.getElementById('btnLock');
+  document.getElementById('mode').textContent = enabled ? '可儲存' : '唯讀';
+  document.getElementById('btnSave').disabled = !enabled;
+  if (enabled) {{
+    badge.textContent = '可寫入';
+    badge.className = 'badge badge-wr';
+    unlockWrap.style.display = 'none';
+    btnLock.style.display = 'inline-block';
+  }} else {{
+    badge.textContent = '唯讀';
+    badge.className = 'badge badge-ro';
+    unlockWrap.style.display = 'flex';
+    btnLock.style.display = 'none';
+  }}
+}}
+
+function renderSlot(name, data) {{
+  const primary = data.provider || providers[0];
+  const fb = (data.fallback || []).slice();
+  const label = slotLabels[name] || name;
+  let html = '<h3>' + label + '</h3><table><tr><th>角色</th><th>Provider</th></tr>';
+  html += '<tr><td>主要</td><td><select id="'+name+'-primary">'+providers.map(p=>'<option '+(p===primary?'selected':'')+'>'+p+'</option>').join('')+'</select></td></tr>';
+  providers.filter(p=>p!==primary).forEach((p,i)=>{{
+    const sel = fb[i] || '';
+    html += '<tr><td>備援 '+(i+1)+'</td><td><select id="'+name+'-fb'+i+'"><option value="">—</option>'+providers.filter(x=>x!==primary).map(x=>'<option '+(x===sel?'selected':'')+'>'+x+'</option>').join('')+'</select></td></tr>';
+  }});
+  html += '</table>';
+  return html;
+}}
+
+async function refresh() {{
+  const resp = await fetch('/api/engines/schema');
+  schema = await resp.json();
+  applyEnginesWriteMode(!!schema.write_enabled);
+  document.getElementById('slots').innerHTML = renderSlot('copy', schema.engines.copy||{{}}) + renderSlot('svg', schema.engines.svg||{{}});
+}}
+
+function collectSlot(name) {{
+  const primary = document.getElementById(name+'-primary').value;
+  const fallback = [];
+  providers.filter(p=>p!==primary).forEach((p,i)=>{{
+    const v = document.getElementById(name+'-fb'+i).value;
+    if (v) fallback.push(v);
+  }});
+  return {{ provider: primary, fallback }};
+}}
+
+async function doUnlock() {{
+  const out = await unlockWrite();
+  if (!out.ok) {{
+    const el = document.getElementById('result');
+    el.style.display = 'block';
+    el.textContent = JSON.stringify(out.data, null, 2);
+    return;
+  }}
+  await refresh();
+}}
+
+async function doLock() {{
+  await lockWrite();
+  document.getElementById('result').style.display = 'none';
+  await refresh();
+}}
+
+async function saveEngines() {{
+  const body = {{ engines: {{ copy: collectSlot('copy'), svg: collectSlot('svg') }} }};
+  const resp = await fetch('/api/engines', {{ method:'POST', headers:{{'Content-Type':'application/json','X-CSRF-Token':csrf}}, body: JSON.stringify(body) }});
+  const data = await resp.json();
+  if (resp.ok && data.ok) {{
+    reloadAfterSave(true);
+    return;
+  }}
+  const el = document.getElementById('result');
+  el.style.display = 'block';
+  el.textContent = JSON.stringify(data, null, 2);
+}}
+refresh();
+</script>
 </body></html>"""
 
 
@@ -604,22 +846,22 @@ def _skills_html() -> str:
   #result {{ margin: 8px 0; padding: 8px; background: #f4f4f5; border-radius: 4px; font-size: 13px; }}
   #resultDetail {{ display: none; white-space: pre-wrap; font-size: 12px; max-height: 200px; overflow: auto; }}
   h3 {{ margin: 16px 0 6px; font-size: 15px; }}
+  {_DASH_PAGE_STYLE}
 </style></head>
 <body>
   <div class="toolbar">
     <a href="/user">返回</a>
     <span id="modeBadge" class="badge badge-ro">唯讀</span>
     <span id="unlockWrap" class="unlock-row">
-      <input type="password" id="pinIn" placeholder="寫入 PIN" size="14"
-        title="與 Settings 中「Skill 寫入 PIN」相同；僅本機有效" />
-      <button type="button" class="btn btn-primary" id="btnUnlock" onclick="unlockWrite()"
-        title="驗證 PIN 後 8 小時內可編輯；按鎖定或關閉分頁後需再解鎖">解鎖</button>
-      <a id="pinSetupLink" href="/settings" style="display:none">先到 Settings 設定 PIN</a>
+      <input type="password" id="pinIn" placeholder="PIN" size="14"
+        title="預設 12345678；可於權杖設定修改；改 PIN 後請重新解鎖" />
+      <button type="button" class="btn btn-primary" id="btnUnlock" onclick="doUnlock()"
+        title="驗證 PIN 後 8 小時內可編輯">解鎖</button>
     </span>
-    <button type="button" class="btn" id="btnLock" onclick="lockWrite()" style="display:none"
-      title="立即回到唯讀，需再輸入 PIN">鎖定</button>
+    <button type="button" class="btn" id="btnLock" onclick="doLock()" style="display:none"
+      title="立即回到唯讀">鎖定</button>
   </div>
-  <h3>平台對應</h3>
+  <h3>平台對應{_tip("僅 skill_mount；LLM 順序請至引擎優先權。")}</h3>
   <table class="mapping"><thead><tr><th>平台</th><th>角色</th><th>Skill</th></tr></thead>
   <tbody id="mappingBody"></tbody></table>
   <button type="button" class="btn btn-primary" id="btnSaveMapping" onclick="saveMapping()" disabled
@@ -641,6 +883,8 @@ def _skills_html() -> str:
 const csrf = "{CSRF_TOKEN}";
 let schema = null;
 let lastDetail = '';
+{_DASH_COMMON_JS}
+{_DASH_UNLOCK_JS}
 function setResult(msg, detail) {{
   document.getElementById('result').textContent = msg;
   lastDetail = detail || '';
@@ -659,7 +903,7 @@ function toggleDetail() {{
   const pre = document.getElementById('resultDetail');
   pre.style.display = pre.style.display === 'none' ? 'block' : 'none';
 }}
-function applyWriteMode(enabled, pinConfigured) {{
+function applyWriteMode(enabled) {{
   const ro = !enabled;
   document.getElementById('editor').readOnly = ro;
   document.getElementById('btnSaveFile').disabled = ro;
@@ -668,9 +912,6 @@ function applyWriteMode(enabled, pinConfigured) {{
   const badge = document.getElementById('modeBadge');
   const unlockWrap = document.getElementById('unlockWrap');
   const btnLock = document.getElementById('btnLock');
-  const pinIn = document.getElementById('pinIn');
-  const btnUnlock = document.getElementById('btnUnlock');
-  const pinLink = document.getElementById('pinSetupLink');
   if (enabled) {{
     badge.textContent = '可寫入';
     badge.className = 'badge badge-wr';
@@ -681,17 +922,13 @@ function applyWriteMode(enabled, pinConfigured) {{
     badge.className = 'badge badge-ro';
     unlockWrap.style.display = 'flex';
     btnLock.style.display = 'none';
-    const needSetup = !pinConfigured;
-    pinIn.disabled = needSetup;
-    btnUnlock.disabled = needSetup;
-    pinLink.style.display = needSetup ? 'inline' : 'none';
   }}
 }}
 async function refreshSchema() {{
   const resp = await fetch('/api/skills/schema');
   const data = await resp.json();
   schema = data;
-  applyWriteMode(!!data.write_enabled, !!data.pin_configured);
+  applyWriteMode(!!data.write_enabled);
   const skillSel = document.getElementById('skillSel');
   skillSel.innerHTML = '';
   for (const s of data.skills || []) {{
@@ -737,28 +974,17 @@ function renderMapping() {{
     tbody.appendChild(tr);
   }}
 }}
-async function unlockWrite() {{
-  const pin = document.getElementById('pinIn').value;
-  const resp = await fetch('/api/skills/unlock', {{
-    method: 'POST',
-    headers: {{'Content-Type':'application/json','X-CSRF-Token':csrf}},
-    body: JSON.stringify({{pin}})
-  }});
-  const data = await resp.json();
-  if (!resp.ok) {{
-    setResult(data.error || '解鎖失敗', data.hint || JSON.stringify(data));
+async function doUnlock() {{
+  const out = await unlockWrite();
+  if (!out.ok) {{
+    setResult(out.data.error || '解鎖失敗', JSON.stringify(out.data, null, 2));
     return;
   }}
-  document.getElementById('pinIn').value = '';
   setResult('已解鎖，可編輯');
   await refreshSchema();
 }}
-async function lockWrite() {{
-  await fetch('/api/skills/lock', {{
-    method: 'POST',
-    headers: {{'Content-Type':'application/json','X-CSRF-Token':csrf}},
-    body: '{{}}'
-  }});
+async function doLock() {{
+  await lockWrite();
   setResult('已鎖定，唯讀');
   await refreshSchema();
 }}
@@ -783,8 +1009,11 @@ async function saveFile() {{
     body: JSON.stringify(payload)
   }});
   const data = await resp.json();
-  setResult(resp.ok ? '檔案已儲存' : (data.error || '儲存失敗'), JSON.stringify(data, null, 2));
-  await refreshSchema();
+  if (resp.ok && data.ok) {{
+    reloadAfterSave(true);
+    return;
+  }}
+  setResult(data.error || '儲存失敗', JSON.stringify(data, null, 2));
 }}
 async function saveMapping() {{
   const mapping = {{}};
@@ -802,8 +1031,11 @@ async function saveMapping() {{
     body: JSON.stringify({{mapping}})
   }});
   const data = await resp.json();
-  setResult(resp.ok ? '對應已儲存' : (data.error || '儲存失敗'), JSON.stringify(data, null, 2));
-  await refreshSchema();
+  if (resp.ok && data.ok) {{
+    reloadAfterSave(true);
+    return;
+  }}
+  setResult(data.error || '儲存失敗', JSON.stringify(data, null, 2));
 }}
 document.getElementById('skillSel').addEventListener('change', refreshFiles);
 refreshSchema();
@@ -817,14 +1049,14 @@ def _js_embed(obj: object) -> str:
 
 def _settings_html() -> str:
     values = _load_env_values()
-    env_path = str(ENV_PATH.resolve())
     initial_schema = _js_embed(schema_payload())
     initial_status = _js_embed(status_payload(values))
-    page_rev = INSTANCE_REV
+    st_tip = _tip("只寫有填欄位；儲存後重啟 n8n 並驗證。空欄不覆寫 .env。")
     return f"""<!doctype html>
-<html><head><meta charset="utf-8"><title>Token Settings</title>
+<html><head><meta charset="utf-8"><title>權杖設定</title>
 <style>
   body {{ font-family: system-ui, sans-serif; margin: 16px; }}
+  {_DASH_PAGE_STYLE}
   #status {{ font-weight: 600; margin: 8px 0; color: #0a5; }}
   #result {{
     background: #1a1a2e; color: #eee; padding: 12px; min-height: 80px;
@@ -838,19 +1070,19 @@ def _settings_html() -> str:
   .field-status.is-set {{ color: #0a5; font-weight: 600; }}
 </style></head>
 <body>
-  <h2>Token Settings (localhost)</h2>
-  <p id="envPath">.env: {html.escape(env_path)} · :{PORT}</p>
-  <p><a href="/user">Back to user console</a> | <a href="/settings">Reload page</a></p>
-  <div id="status">Loading...</div>
-  <pre id="result">(result appears here)</pre>
+  <h2>權杖設定{st_tip}</h2>
+  <p><a href="/user">返回</a> | <a href="/engines">引擎優先權</a> | <a href="/settings">重新載入</a></p>
+  <div id="status">載入中…</div>
+  <pre id="result">（結果顯示於此）</pre>
   <div class="actions">
-    <button type="button" id="btnSave">Save updates</button>
-    <button type="button" id="btnTestAll">Test all</button>
+    <button type="button" id="btnSave">儲存</button>
+    <button type="button" id="btnTestAll">全部測試</button>
     <button type="button" id="btnTestTelegram">Test telegram</button>
     <button type="button" id="btnTestN8n">Test n8n</button>
     <button type="button" id="btnTestMeta">Test Meta+IG</button>
     <button type="button" id="btnTestThreads">Test threads</button>
     <button type="button" id="btnCheckCli">Check CLI auth</button>
+    <button type="button" id="btnCheckTelegram">Check telegram</button>
     <button type="button" id="btnCheckMeta">Check Meta/IG/Threads</button>
   </div>
   <form id="settingsForm"></form>
@@ -858,12 +1090,7 @@ def _settings_html() -> str:
 var csrfToken = "{CSRF_TOKEN}";
 var schema = {initial_schema};
 var statusRows = {initial_status};
-var dashboardPort = "{PORT}";
-
-function setEnvPathLine(path) {{
-  var el = document.getElementById('envPath');
-  if (el && path) el.textContent = '.env: ' + path + ' · :' + dashboardPort;
-}}
+{_DASH_COMMON_JS}
 
 function showResult(text, statusText) {{
   var el = document.getElementById('result');
@@ -894,20 +1121,6 @@ function collectFormUpdates() {{
   return updates;
 }}
 
-async function refreshStatusLabelsOnly() {{
-  var statusResp = await fetch('/api/settings/status');
-  var statusJson = await statusResp.json();
-  statusRows = statusJson.fields || [];
-  if (statusJson.env_path) setEnvPathLine(statusJson.env_path);
-  var nodes = document.querySelectorAll('small.field-status');
-  for (var i = 0; i < nodes.length; i++) {{
-    var name = nodes[i].getAttribute('data-field');
-    var s = fieldStatus(name);
-    nodes[i].textContent = statusLabel(s);
-    nodes[i].className = 'field-status' + (s.is_set ? ' is-set' : '');
-  }}
-}}
-
 async function refreshCsrf() {{
   try {{
     var r = await fetch('/api/csrf');
@@ -930,10 +1143,10 @@ function renderSettingsForm() {{
     var inpClass = f.secret ? 'secret-input' : '';
     var stClass = 'field-status' + (s.is_set ? ' is-set' : '');
     var pinTitle = (f.name === 'AUTO_MEDIA_DASHBOARD_WRITE_PIN')
-      ? ' title="至少 8 字元；供 Skill Manager 解鎖，勿與 Telegram token 混用"'
+      ? ' title="留空則預設解鎖碼 12345678；至少 8 字元；儲存後覆寫；改 PIN 請重新解鎖"'
       : '';
     var pinLabelTitle = (f.name === 'AUTO_MEDIA_DASHBOARD_WRITE_PIN')
-      ? ' title="在 /skills 輸入相同 PIN 可解鎖編輯"'
+      ? ' title="Skill／引擎頁解鎖用"'
       : '';
     row.innerHTML =
       '<label' + pinLabelTitle + '><b>' + f.name + '</b> (' + f.group + ')</label><br/>' +
@@ -959,9 +1172,8 @@ async function loadSettings() {{
     var statusJson = await statusResp.json();
     schema = schemaJson.fields || schema;
     statusRows = statusJson.fields || statusRows;
-    if (statusJson.env_path) setEnvPathLine(statusJson.env_path);
     renderSettingsForm();
-    showResult('(ready)', 'Loaded ' + schema.length + ' fields.');
+    showResult('（就緒）', '已載入 ' + schema.length + ' 個欄位');
   }} catch (e) {{
     renderSettingsForm();
     showResult('API refresh failed, using server snapshot: ' + e, 'Offline snapshot');
@@ -1008,25 +1220,13 @@ async function saveSettings() {{
       return;
     }}
     var data = out.data;
-    if (data.fields) statusRows = data.fields;
-    var inputs = document.querySelectorAll('#settingsForm input[name]');
-    for (var i = 0; i < inputs.length; i++) inputs[i].value = '';
-    await refreshStatusLabelsOnly();
-    var apply = data.apply || {{}};
-    var v = apply.verify_meta || {{}};
-    var n = apply.n8n_restart || {{}};
-    var statusLabel = 'Saved: ' + (data.changed || []).join(', ');
-    if (apply.ok) {{
-      statusLabel += ' | n8n restarted | verify OK';
-    }} else if (n.ok === false) {{
-      statusLabel += ' | n8n restart FAILED';
-    }} else if (v.ok === false) {{
-      statusLabel += ' | verify FAILED (see apply.verify_meta)';
+    if (out.resp.ok && data.ok !== false) {{
+      reloadAfterSave(true);
+      return;
     }}
-    data.hint = 'Auto: docker compose up -d n8n + verify_meta_tokens.sh';
-    showResult(JSON.stringify(data, null, 2), statusLabel);
+    showResult(JSON.stringify({{ok: false, http: out.resp.status, data: data}}, null, 2), '儲存失敗');
   }} catch (e) {{
-    showResult('Save failed: ' + e, 'Save failed');
+    showResult('儲存失敗: ' + e, '儲存失敗');
   }}
 }}
 
@@ -1068,6 +1268,7 @@ document.getElementById('btnTestN8n').addEventListener('click', function() {{ ru
 document.getElementById('btnTestMeta').addEventListener('click', function() {{ runTest('meta'); }});
 document.getElementById('btnTestThreads').addEventListener('click', function() {{ runTest('threads'); }});
 document.getElementById('btnCheckCli').addEventListener('click', function() {{ runReadonlyCheck('cli-auth'); }});
+document.getElementById('btnCheckTelegram').addEventListener('click', function() {{ runReadonlyCheck('telegram'); }});
 document.getElementById('btnCheckMeta').addEventListener('click', function() {{ runReadonlyCheck('meta'); }});
 renderSettingsForm();
 loadSettings();
@@ -1077,7 +1278,8 @@ loadSettings();
 
 class Handler(BaseHTTPRequestHandler):
     CHECK_ACTIONS: dict[str, list[str]] = {
-        "cli-auth": ["bash", "scripts/verify_n8n_claude_engine.sh"],
+        "cli-auth": ["bash", "scripts/verify_n8n_cli_auth.sh"],
+        "telegram": ["bash", "scripts/verify_telegram.sh"],
         "meta": ["bash", "scripts/verify_meta_tokens.sh"],
     }
 
@@ -1153,12 +1355,21 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_html(self, html_body: str, code: int = 200) -> None:
+        raw = html_body.encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
     def do_GET(self) -> None:  # noqa: N802
         if self._reject_if_not_local():
             return
         path, query = self._query()
         if path == "/healthz":
-            self._json({"ok": True, "service": "am-dashboard"})
+            self._json(_instance_meta(), no_store=True)
             return
         if path == "/api/status":
             rc, out = run(["bash", "scripts/env-check.sh"])
@@ -1176,6 +1387,9 @@ class Handler(BaseHTTPRequestHandler):
             if action == "cli-auth":
                 self._json(cli_auth_status())
                 return
+            if action == "telegram":
+                self._json(telegram_check_status())
+                return
             rc, out = run_safe(cmd, timeout_s=20)
             next_steps = []
             if action == "meta":
@@ -1183,13 +1397,12 @@ class Handler(BaseHTTPRequestHandler):
                 if rc != 0:
                     next_steps = [
                         "Refresh Meta/Threads token in Graph API Explorer",
-                        "Save via http://127.0.0.1:8790/settings (not :8788)",
+                        "Save via http://127.0.0.1:8790/settings",
                         "Restart n8n: sudo docker compose up -d n8n",
                     ]
                 if "all meta checks skipped" in out or "no token checks ran" in out:
                     next_steps = [
                         "Open http://127.0.0.1:8790/settings and save tokens",
-                        "Confirm .env shows port 8790 dashboard path",
                     ]
             self._json(
                 {
@@ -1201,16 +1414,7 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
         if path == "/api/instance":
-            self._json(
-                {
-                    "ok": True,
-                    "port": PORT,
-                    "root": str(ROOT.resolve()),
-                    "env_path": str(ENV_PATH.resolve()),
-                    "instance_rev": INSTANCE_REV,
-                },
-                no_store=True,
-            )
+            self._json(_instance_meta(), no_store=True)
             return
         if path == "/api/csrf":
             self._json({"ok": True, "csrf": CSRF_TOKEN}, no_store=True)
@@ -1227,6 +1431,14 @@ class Handler(BaseHTTPRequestHandler):
                 },
                 no_store=True,
             )
+            return
+        if path == "/api/engines/schema":
+            self._json({"ok": True, **_engines_schema_payload(self)})
+            return
+        if path == "/api/versions":
+            target = (query.get("target") or [""])[0]
+            rows = list_versions(DATA, target or None)
+            self._json({"ok": True, "target": target, "versions": rows})
             return
         if path == "/api/skills/schema":
             self._json({"ok": True, **_skills_schema_payload(self)})
@@ -1252,39 +1464,20 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": True, "skill": skill, "file": filename, "content": content})
             return
         if path == "/user":
-            raw = _user_html().encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(raw)))
-            self.end_headers()
-            self.wfile.write(raw)
+            self._send_html(_user_html())
             return
         if path == "/settings":
-            raw = _settings_html().encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Content-Length", str(len(raw)))
-            self.end_headers()
-            self.wfile.write(raw)
+            self._send_html(_settings_html())
             return
         if path == "/skills":
-            raw = _skills_html().encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(raw)))
-            self.end_headers()
-            self.wfile.write(raw)
+            self._send_html(_skills_html())
+            return
+        if path == "/engines":
+            self._send_html(_engines_html())
             return
         if path == "/":
             rc, status_out = run(["bash", "scripts/env-check.sh"])
-            body = _dashboard_html(rc, status_out)
-            raw = body.encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(raw)))
-            self.end_headers()
-            self.wfile.write(raw)
+            self._send_html(_dashboard_html(rc, status_out))
             return
         self._json({"ok": False, "error": "not found"}, code=404)
 
@@ -1311,6 +1504,8 @@ class Handler(BaseHTTPRequestHandler):
             if not changed:
                 self._json({"ok": False, "error": "no valid fields in updates"}, code=400)
                 return
+            if ENV_PATH.is_file():
+                _version_snapshot(".env", ENV_PATH, "settings_update")
             values = _load_env_values()
             apply = _apply_after_settings_save()
             self._json(
@@ -1343,16 +1538,6 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": False, "error": "too many attempts, retry later"}, code=429)
                 return
             expected = _configured_write_pin()
-            if not expected:
-                self._json(
-                    {
-                        "ok": False,
-                        "error": "pin not configured",
-                        "hint": "Set Skill write PIN in Settings first",
-                    },
-                    code=400,
-                )
-                return
             pin = str(payload.get("pin", ""))
             if len(pin) < WRITE_PIN_MIN_LEN or not secrets.compare_digest(pin, expected):
                 _record_unlock_fail(client_ip)
@@ -1390,6 +1575,8 @@ class Handler(BaseHTTPRequestHandler):
                 with _edit_lock():
                     had_original = p.exists()
                     backup = _backup_copy(p) if had_original else None
+                    if had_original:
+                        _version_snapshot(f"config/skills/{skill}/{filename}", p, "skill_file_save")
                     _write_text_atomic(p, content)
                     rc_v, out_v = run_safe(["bash", "scripts/amctl.sh", "skill", "validate", skill], timeout_s=45)
                     if rc_v != 0:
@@ -1510,6 +1697,105 @@ class Handler(BaseHTTPRequestHandler):
                 return
             except Exception as e:
                 _audit_skill("skill_mapping_save", False, client_ip, error=str(e))
+                self._json({"ok": False, "error": str(e)}, code=500)
+                return
+        if self.path == "/api/engines":
+            if not _write_enabled_for(self):
+                self._json({"ok": False, "error": "write disabled; unlock with PIN first"}, code=403)
+                return
+            engines_payload = payload.get("engines")
+            if not isinstance(engines_payload, dict):
+                self._json({"ok": False, "error": "engines must be object"}, code=400)
+                return
+            client_ip = self.client_address[0]
+            try:
+                with _edit_lock():
+                    old_config = _load_platform_config()
+                    prev_backup = _backup_copy(PLATFORM_YAML) if PLATFORM_YAML.exists() else None
+                    _save_platform_config_atomic(
+                        _replace_global_engines(old_config, engines_payload),
+                        snapshot_reason="engines_save",
+                    )
+                    rc_a, out_a = run_safe(["bash", "scripts/amctl.sh", "apply"], timeout_s=90)
+                    if rc_a != 0:
+                        if prev_backup and prev_backup.is_file():
+                            _write_text_atomic(PLATFORM_YAML, prev_backup.read_text(encoding="utf-8"))
+                            run_safe(["bash", "scripts/amctl.sh", "apply"], timeout_s=90)
+                        self._json({"ok": False, "stage": "apply", "output": out_a}, code=400)
+                        return
+                _audit_skill("engines_save", True, client_ip)
+                self._json({"ok": True, "engines": _engines_from_config(), "apply_output": out_a})
+                return
+            except ValueError as e:
+                self._json({"ok": False, "error": str(e)}, code=400)
+                return
+            except Exception as e:
+                self._json({"ok": False, "error": str(e)}, code=500)
+                return
+        if self.path == "/api/versions/rollback":
+            if not _write_enabled_for(self):
+                self._json({"ok": False, "error": "write disabled; unlock with PIN first"}, code=403)
+                return
+            snap_rel = str(payload.get("path", "")).strip()
+            target = str(payload.get("target", "")).strip()
+            if not snap_rel or not target:
+                self._json({"ok": False, "error": "path and target required"}, code=400)
+                return
+            dest_map = {
+                "config/platform.yaml": PLATFORM_YAML,
+                ".env": ENV_PATH,
+            }
+            if target.startswith("config/skills/"):
+                dest = (ROOT / target).resolve()
+                if SKILLS_DIR.resolve() not in dest.parents and dest != SKILLS_DIR.resolve():
+                    self._json({"ok": False, "error": "invalid skill path"}, code=400)
+                    return
+                dest_map[target] = dest
+            dest = dest_map.get(target)
+            if not dest:
+                self._json({"ok": False, "error": "unsupported rollback target"}, code=400)
+                return
+            try:
+                with _edit_lock():
+                    pre_content = dest.read_text(encoding="utf-8") if dest.is_file() else None
+                    if dest.is_file():
+                        _version_snapshot(target, dest, "pre_rollback")
+                    restore_snapshot(DATA, snap_rel, dest)
+                    if target.startswith("config/skills/"):
+                        skill = target.removeprefix("config/skills/").split("/")[0]
+                        rc_v, out_v = run_safe(
+                            ["bash", "scripts/amctl.sh", "skill", "validate", skill],
+                            timeout_s=45,
+                        )
+                        if rc_v != 0:
+                            if pre_content is not None:
+                                _write_text_atomic(dest, pre_content)
+                            self._json(
+                                {"ok": False, "stage": "validate", "output": out_v},
+                                code=400,
+                            )
+                            return
+                    if target == "config/platform.yaml":
+                        rc_a, out_a = run_safe(["bash", "scripts/amctl.sh", "apply"], timeout_s=90)
+                        if rc_a != 0:
+                            if pre_content is not None:
+                                _write_text_atomic(dest, pre_content)
+                                run_safe(["bash", "scripts/amctl.sh", "apply"], timeout_s=90)
+                            self._json({"ok": False, "stage": "apply", "output": out_a}, code=400)
+                            return
+                    elif target == ".env":
+                        rc_d, out_d = run_safe(
+                            ["sudo", "docker", "compose", "up", "-d", "n8n", "gateway"],
+                            timeout_s=120,
+                        )
+                        if rc_d != 0:
+                            if pre_content is not None:
+                                _write_text_atomic(dest, pre_content)
+                            self._json({"ok": False, "stage": "compose", "output": out_d}, code=400)
+                            return
+                self._json({"ok": True, "target": target, "restored": str(dest)})
+                return
+            except Exception as e:
                 self._json({"ok": False, "error": str(e)}, code=500)
                 return
         self._json({"ok": False, "error": "not found"}, code=404)

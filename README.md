@@ -4,7 +4,16 @@ Low-cost, self-hosted pipeline for social posts: Markdown copy + SVG → PNG, hu
 
 ## Quick start
 
-### 1. Environment check
+### 1. Install (guided)
+
+```bash
+bash scripts/setup_wizard.sh --dry-run   # no writes; see docs/VERIFY.md
+bash scripts/setup_wizard.sh             # interactive install
+```
+
+Non-interactive: `bash scripts/install.sh`. After `docker compose build`: `bash scripts/post_docker_rebuild.sh`. Details: [docs/INSTALL.md](docs/INSTALL.md).
+
+### 2. Environment check
 
 ```bash
 ./scripts/env-check.sh
@@ -33,18 +42,17 @@ Install missing tools:
 
 See [DEVCONTAINER.md](docs/DEVCONTAINER.md) and [CODEX_DOCKER.md](docs/CODEX_DOCKER.md) (no DinD in n8n/Codex cloud).
 
-### 2. Configure
+### 3. Configure (manual alternative)
 
 ```bash
 cp .env.example .env
-# Edit secrets (UTF-8). For dry-run without CLIs:
-# AUTO_MEDIA_MOCK=1
+# Edit secrets (UTF-8). For pipeline mock without CLIs: AUTO_MEDIA_MOCK=1
 
 uv sync
 ./scripts/amctl.sh apply
 ```
 
-### 3. Build and run n8n
+### 4. Build and run n8n
 
 ```bash
 docker compose build
@@ -57,7 +65,7 @@ Open [http://localhost:5678](http://localhost:5678) — follow **[N8N_WORKFLOW_S
 
 **資源：** n8n 容器 `mem_limit: 512m`；Playwright/Chromium 僅在 Plan B 熔斷時由 Hermes 啟動，不常駐。
 
-### 4. Smoke test (mock)
+### 5. Smoke test (mock)
 
 ```bash
 export AUTO_MEDIA_MOCK=1 DATA_ROOT=./data
@@ -66,9 +74,10 @@ mkdir -p data/config
 RUN_ID=test-001
 ./scripts/write_task.sh --run-id "$RUN_ID" --topic "Smoke test"
 ./scripts/generate_copy.sh --run-id "$RUN_ID"
-./scripts/generate_svg.sh --run-id "$RUN_ID"
+./scripts/generate_image.sh --run-id "$RUN_ID"
 ./scripts/render_png.sh --run-id "$RUN_ID"
 ls -la "data/runs/$RUN_ID"
+# Expect: TASK.md, post.md, post.png (art.svg optional)
 ```
 
 ### Non-engineer local UI
@@ -91,9 +100,26 @@ User guide: [`USER.md`](USER.md)
 | `amctl ui n8n|hermes|dual`       | Switch operator UI                                  |
 | `amctl skill list|validate|use`  | Skill mounts                                        |
 | `amctl publish api|dom|auto`     | Publish mode                                        |
-| `amctl engine copy|svg PROVIDER` | Engine provider                                     |
+| `amctl engine copy|svg PROVIDER` | Engine provider (CLI)                               |
 | `amctl supervisor`               | Check `api_dead.json` / Plan B hint                 |
 
+Engine priority UI (copy/svg order): `http://127.0.0.1:8790/engines` — see [USER.md](USER.md).
+
+## Architecture
+
+Self-hosted pipeline: **n8n** orchestration, file-based **Skills** (open-design), **Hermes** Plan B supervisor.
+
+| Layer | Component |
+|-------|-----------|
+| Control | `config/platform.yaml` + `amctl.sh` |
+| Orchestration | n8n (Docker, custom image) |
+| Generation | Claude / Codex / Gemini CLI via `invoke-engine.sh` |
+| Render | rsvg-convert → PNG |
+| HITL | Telegram + Gateway + n8n Wait |
+| Plan A publish | Meta Graph API |
+| Plan B | Hermes + Playwright (`api_dead.json`) |
+
+References: [n8n](https://github.com/n8n-io/n8n) · [Hermes Agent](https://github.com/nousresearch/hermes-agent) · [open-design](https://github.com/nexu-io/open-design)
 
 ## Encoding
 
@@ -103,17 +129,32 @@ User guide: [`USER.md`](USER.md)
 
 ## Docs
 
-- [N8N_WORKFLOW_SETUP.md](docs/N8N_WORKFLOW_SETUP.md) — n8n 網頁建立產線（非工程師）
-- [DEVCONTAINER.md](docs/DEVCONTAINER.md) — Claude Code dev environment
-- [CODEX_DOCKER.md](docs/CODEX_DOCKER.md) — Codex / Docker boundaries (no DinD)
-- [SKILL_AUTHORING.md](docs/SKILL_AUTHORING.md) — human co-creation checklist
-- [HUMAN_SKILL_ROADMAP.md](docs/HUMAN_SKILL_ROADMAP.md) — Skill 上線簽核清單
-- [DATA_PERMISSIONS.md](docs/DATA_PERMISSIONS.md) — `data/` UID / WSL 策略
-- [HERMES_SETUP.md](docs/HERMES_SETUP.md) — Plan B
-- [BROWSER_PROFILE.md](docs/BROWSER_PROFILE.md) — Meta session
-- [USER.md](USER.md) — local UI + safe token input
+**Install / verify**
 
-Official references: [n8n](https://github.com/n8n-io/n8n) · [Hermes Agent](https://github.com/nousresearch/hermes-agent)
+- [INSTALL.md](docs/INSTALL.md) — setup wizard, HITL, forwarder, 8790 console
+- [VERIFY.md](docs/VERIFY.md) — smoke, doctor, strict verify, production gates
+- [USER.md](USER.md) — non-engineer UI and tokens
+
+**Operations**
+
+- [N8N_WORKFLOW_SETUP.md](docs/N8N_WORKFLOW_SETUP.md) — build workflow in n8n UI
+- [GATEWAY_DEPLOY.md](docs/GATEWAY_DEPLOY.md) — Telegram → Gateway (HTTPS / poll dev)
+- [ENGINE_FAILOVER.md](docs/ENGINE_FAILOVER.md) — copy/svg provider chain
+
+**Environment**
+
+- [DEVCONTAINER.md](docs/DEVCONTAINER.md) — Dev Container + OAuth
+- [CODEX_DOCKER.md](docs/CODEX_DOCKER.md) — Codex / Docker boundaries
+- [CLAUDE_CLI.md](docs/CLAUDE_CLI.md) · [GEMINI_CLI.md](docs/GEMINI_CLI.md)
+
+**Skills / Plan B**
+
+- [SKILL_AUTHORING.md](docs/SKILL_AUTHORING.md) · [HUMAN_SKILL_ROADMAP.md](docs/HUMAN_SKILL_ROADMAP.md)
+- [DUOKE_CONTENT_SKILL.md](docs/DUOKE_CONTENT_SKILL.md)
+- [HERMES_SETUP.md](docs/HERMES_SETUP.md) · [BROWSER_PROFILE.md](docs/BROWSER_PROFILE.md)
+- [DATA_PERMISSIONS.md](docs/DATA_PERMISSIONS.md) · [MCP_AUTOMEDIA.md](docs/MCP_AUTOMEDIA.md) · [N8N_MCP.md](docs/N8N_MCP.md)
+
+**ADR:** [docs/adr/](docs/adr/)
 
 ## Layout
 

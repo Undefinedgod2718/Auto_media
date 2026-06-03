@@ -450,21 +450,18 @@ Forwarder 會將事件 POST 到 n8n Wait webhook：
 
 ---
 
-## 節點 13：Meta Graph API publish（核准後發文）
+## 節點 13：Meta Graph API publish（legacy，未連線）
 
-- 節點類型：**HTTP Request**
-- Method：**POST**
-- URL：
+workflow JSON 內仍保留 **HTTP Request** `/photos` 節點，但 **happy-path 無入邊**；核准後 Facebook 走 **Execute Command** → `publish_facebook.sh`：
 
-```text
-https://graph.facebook.com/{{ $env.META_GRAPH_API_VERSION }}/{{ $env.META_PAGE_ID }}/photos
-```
+- 有 `catbox_urls.json` 的 `first_url` → `POST /{page-id}/photos`
+- 無圖、有文案 → `POST /{page-id}/feed`（純文字）
 
-- Query：`access_token` = `={{ $env.META_PAGE_ACCESS_TOKEN }}`
-- Body：multipart-form-data，欄位 `message` = `={{ $('Read post.md').item.json.data }}`
-- 需帶入圖片二進位（依 n8n 版本從 Read post.png 節點選擇 Binary 欄位）
+以下為舊版手動節點說明，僅供對照：
 
-連線：**Switch** 的 **approve** 輸出 → 本節點。
+- Method：**POST** → `.../photos`
+- Query：`access_token` = Page token
+- Body：multipart + `message`（已廢棄於 live 路徑）
 
 ---
 
@@ -515,7 +512,7 @@ bash scripts/check_telegram_hitl.sh     # 診斷 Wait / forwarder / Telegram
 1. 右上角 **Save** → **Publish**。
 2. 開關設為 **Active**（排程自動跑）。
 3. 測試 HITL：`bash scripts/trigger_production_run.sh`（勿用編輯器 Execute）。
-4. 到專案資料夾查看：`data/runs/<run_id>/` 應有 `post.md`、`art.svg`、`post.png`。
+4. 到專案資料夾查看：`data/runs/<run_id>/` 應有 `post.md`、`post.png`（PNG-first）；`art.svg` 僅舊 SVG skill 路徑，可無。
 
 ---
 
@@ -548,9 +545,9 @@ bash scripts/check_telegram_hitl.sh     # 診斷 Wait / forwarder / Telegram
 4. **Long-lived Page token**：與 FB 相同流程換長效 token，存於 `META_PAGE_ACCESS_TOKEN`。
 5. **驗證**：`bash scripts/verify_meta_tokens.sh` → `docker compose up -d n8n`。
 
-**注意**：圖片 URL 須公開 HTTPS（不可用 localhost）；container 建立後請盡快 publish；IG 約 **25 篇/日** 上限。
+**注意**：圖片 URL 須公開 HTTPS（不可用 localhost）；container 建立後請盡快 publish；IG 約 **25 篇/日** 上限。IG 發佈支援 **1 張 single** 或 **≥2 張 carousel**（`ig_publish.py`）；無公開圖時 `publish_ig_carousel.sh` 會 `skip no_images`。
 
-核准後發佈為 **env-gated fan-out**：`META_PAGE_ID` → FB `/photos`；`THREADS_USER_ID` → Threads chain；`IG_USER_ID` → IG carousel。共用 `upload_carousel_catbox.sh` 的 URL。
+核准後發佈為 **env-gated fan-out**：`META_PAGE_ID` → `publish_facebook.sh`（有 catbox URL 用 `/photos`，否則 `/feed` 純文字）；`THREADS_USER_ID` → Threads chain（無圖可 TEXT）；`IG_USER_ID` → IG carousel（需公開圖 URL）。IG/Threads 共用 `upload_carousel_catbox.sh`；FB 與 catbox 上傳並行，不依賴 catbox 先完成。
 
 ---
 

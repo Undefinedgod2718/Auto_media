@@ -10,6 +10,8 @@ data/hitl/*
 data/logs/*
 !data/logs/.gitkeep
 data/backups/*
+data/versions/
+data/state/
 data/locks/*
 data/config/platform.runtime.json
 config/hermes/CONTEXT.md

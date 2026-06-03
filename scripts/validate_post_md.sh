@@ -36,7 +36,17 @@ except (json.JSONDecodeError, TypeError, AttributeError):
   sys.exit(1)
 ' <<<"$OUT"; then
   echo "validate_post_md: content/structure check failed" >&2
-  if [[ "$OUT" != \{* ]]; then
+  if [[ "$OUT" == \{* ]]; then
+    python3 -c 'import json,sys
+d=json.load(sys.stdin)
+for e in d.get("errors") or []:
+    print(f"validate_post_md: {e}", file=sys.stderr)
+for v in d.get("violations") or []:
+    msg=v.get("message_zh") if isinstance(v,dict) else str(v)
+    if msg:
+        print(f"validate_post_md: {msg}", file=sys.stderr)
+' <<<"$OUT" 2>/dev/null || true
+  else
     echo "$OUT" >&2
     exit 1
   fi

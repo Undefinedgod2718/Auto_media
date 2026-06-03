@@ -125,7 +125,7 @@ def record_from_run(run_dir: Path, ledger_path: Path | None = None) -> dict:
     if fb_file.is_file():
         d = json.loads(fb_file.read_text(encoding="utf-8"))
         if d.get("ok") and not d.get("skipped"):
-            append_entry(path, run_id=run_id, platform="facebook", units=1, kind="photo")
+            append_entry(path, run_id=run_id, platform="facebook", units=1, kind=d.get("mode") or "photo")
             recorded.append("facebook")
 
     return {"ok": True, "recorded": recorded}

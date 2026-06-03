@@ -14,6 +14,8 @@ orchestration:
   supervisor: hermes
 
 # Legal engine providers: claude_cli | codex_cli | gemini_cli
+# Global copy/svg below are consumed by scripts/lib/invoke-engine.sh.
+# engines.platforms.*.writer/artist provider+fallback are NOT read by invoke-engine (skill_mount only).
 engines:
   copy:
     provider: claude_cli

@@ -83,13 +83,6 @@ PY
   exit 0
 fi
 
-if [[ ${#URLS[@]} -lt 2 ]]; then
-  if /bin/bash "$(dirname "${BASH_SOURCE[0]}")/lib/publish_target_gate.sh" "$RUN_DIR" instagram; then
-    echo "{\"ok\":false,\"error\":\"IG carousel needs >=2 images, got ${#URLS[@]}\"}" >&2
-    exit 1
-  fi
-fi
-
 python3 - "$RUN_DIR" "${URLS[@]}" <<'PY'
 import json, sys
 from pathlib import Path

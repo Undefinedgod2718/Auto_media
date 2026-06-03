@@ -85,9 +85,16 @@ CATBOX_JSON="${RUN_DIR}/catbox_urls.json"
 POST_MD="$(PYTHONPATH="$ROOT/scripts/lib" python3 -c "from pathlib import Path; from media_paths import run_post_md; print(run_post_md(Path('$RUN_DIR'),'instagram'))")"
 
 if [[ ! -f "$CATBOX_JSON" ]]; then
-  /bin/bash "$(dirname "${BASH_SOURCE[0]}")/upload_carousel_catbox.sh" --run-id "$RUN_ID" >/dev/null
+  /bin/bash "$(dirname "${BASH_SOURCE[0]}")/upload_carousel_catbox.sh" --run-id "$RUN_ID" >/dev/null || true
 fi
-[[ -f "$CATBOX_JSON" ]] || json_err "missing catbox_urls.json — run upload_carousel_catbox first"
+if [[ ! -f "$CATBOX_JSON" ]]; then
+  write_ig_skip "no_images" ""
+fi
+
+URL_COUNT="$(python3 -c "import json; print(len(json.load(open('${CATBOX_JSON}')).get('image_urls') or []))" 2>/dev/null || echo 0)"
+if [[ "${URL_COUNT:-0}" -eq 0 ]]; then
+  write_ig_skip "no_images" ""
+fi
 
 URLS_JSON="$(python3 -c "import json; print(json.dumps(json.load(open('$CATBOX_JSON'))['image_urls']))")"
 CAPTION_FILE="${RUN_DIR}/.ig_caption.txt"

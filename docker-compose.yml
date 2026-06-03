@@ -111,5 +111,31 @@ services:
       retries: 3
       start_period: 15s
 
+  forwarder:
+    image: auto-media-gateway:local
+    build:
+      context: .
+      dockerfile: docker/gateway/Dockerfile
+    restart: unless-stopped
+    user: "0:0"
+    entrypoint: ["/entrypoint.sh"]
+    command: ["bash", "/app/scripts/telegram_poll_forwarder_loop.sh"]
+    profiles: ["forwarder"]
+    env_file:
+      - .env
+    environment:
+      AUTO_MEDIA_ROOT: /app
+      DATA_ROOT: /data
+      GATEWAY_POLL_URL: ${GATEWAY_POLL_URL:-http://gateway:8787}
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+    volumes:
+      - ./data/runs:/data/runs
+      - ./data/logs:/data/logs
+      - ./data/hitl:/data/hitl
+    depends_on:
+      gateway:
+        condition: service_healthy
+
 volumes:
   n8n_data:

@@ -79,6 +79,14 @@ cmd_doctor() {
     echo "--- scripts/ensure_n8n_oauth.sh ---"
     bash "${REPO_ROOT}/scripts/ensure_n8n_oauth.sh" || failures=$((failures + 1))
   fi
+  if [[ -x "${REPO_ROOT}/scripts/verify_n8n_cli_auth.sh" ]]; then
+    echo "--- scripts/verify_n8n_cli_auth.sh (warn-only) ---"
+    VERIFY_CLI_STRICT=0 bash "${REPO_ROOT}/scripts/verify_n8n_cli_auth.sh" || failures=$((failures + 1))
+  fi
+  if [[ -x "${REPO_ROOT}/scripts/verify_telegram.sh" ]]; then
+    echo "--- scripts/verify_telegram.sh (warn-only) ---"
+    VERIFY_TELEGRAM_STRICT=0 bash "${REPO_ROOT}/scripts/verify_telegram.sh" || failures=$((failures + 1))
+  fi
   if [[ -x "${REPO_ROOT}/scripts/verify_n8n_claude_engine.sh" ]]; then
     echo "--- scripts/verify_n8n_claude_engine.sh ---"
     bash "${REPO_ROOT}/scripts/verify_n8n_claude_engine.sh" || failures=$((failures + 1))

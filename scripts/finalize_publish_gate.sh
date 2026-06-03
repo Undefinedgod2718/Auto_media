@@ -3,8 +3,11 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-[[ -f "$ROOT/.env" ]] && set -a && source "$ROOT/.env" && set +a
-source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
+SCRIPT_LIB="$(dirname "${BASH_SOURCE[0]}")/lib"
+# shellcheck source=lib/load_env.sh
+source "${SCRIPT_LIB}/load_env.sh"
+load_repo_env "$ROOT"
+source "${SCRIPT_LIB}/common.sh"
 
 RUN_ID=""
 while [[ $# -gt 0 ]]; do
@@ -43,10 +46,27 @@ if not d.get('ok'):
 
 FAIL=0
 TARGETS=()
+TASK_FILE="${RUN_DIR}/TASK.md"
+USE_TASK_TARGETS=0
+[[ -f "$TASK_FILE" ]] && grep -qi '^publish_targets:' "$TASK_FILE" && USE_TASK_TARGETS=1
 
-[[ -n "${META_PAGE_ID:-}" ]] && { check_file publish_facebook.json 1 || FAIL=1; TARGETS+=(facebook); }
-[[ -n "${THREADS_USER_ID:-}" ]] && { check_file publish_threads.json 1 || FAIL=1; TARGETS+=(threads); }
-[[ -n "${IG_USER_ID:-}" ]] && { check_file publish_ig.json 1 || FAIL=1; TARGETS+=(instagram); }
+gate_platform() {
+  local platform="$1"
+  local env_set="$2"
+  local json_name="$3"
+  local label="$4"
+  if [[ "$USE_TASK_TARGETS" -eq 1 ]]; then
+    PYTHONPATH="${ROOT}/scripts/lib" python3 -c "import sys; from pathlib import Path; from parse_task import has_target; sys.exit(0 if has_target(Path(sys.argv[1]), sys.argv[2]) else 1)" \
+      "$TASK_FILE" "$platform" || return 0
+  else
+    [[ "$env_set" == "1" ]] || return 0
+  fi
+  { check_file "$json_name" 1 || FAIL=1; TARGETS+=("$label"); }
+}
+
+gate_platform facebook "$([[ -n "${META_PAGE_ID:-}" ]] && echo 1 || echo 0)" publish_facebook.json facebook
+gate_platform threads "$([[ -n "${THREADS_USER_ID:-}" ]] && echo 1 || echo 0)" publish_threads.json threads
+gate_platform instagram "$([[ -n "${IG_USER_ID:-}" ]] && echo 1 || echo 0)" publish_ig.json instagram
 
 TARGETS_CSV="$(IFS=,; echo "${TARGETS[*]}")"
 

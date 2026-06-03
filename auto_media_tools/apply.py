@@ -108,13 +108,17 @@ def write_context_md(runtime: dict, out: Path) -> None:
 def write_mcp_json(runtime: dict, out: Path) -> None:
     mode = (runtime.get("publish") or {}).get("mode", "auto")
     enable_dom = mode in ("dom", "auto")
+    paths = runtime.get("paths") or {}
+    repo_root = Path(paths.get("repo_root_host") or Path.cwd()).resolve()
+    data_root = repo_root / "data"
+    mcp_script = repo_root / "scripts" / "mcp_automedia.py"
     doc = {"mcpServers": {}}
     doc["mcpServers"]["automedia"] = {
         "command": "python3",
-        "args": ["/data/scripts/mcp_automedia.py"],
+        "args": [str(mcp_script)],
         "env": {
-            "AUTO_MEDIA_ROOT": "/data",
-            "DATA_ROOT": "/data",
+            "AUTO_MEDIA_ROOT": str(repo_root),
+            "DATA_ROOT": str(data_root),
             "AUTO_MEDIA_MCP_WRITE": "0",
         },
     }

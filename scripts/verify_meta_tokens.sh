@@ -78,12 +78,80 @@ else
   echo "skip THREADS (THREADS_USER_ID or THREADS_ACCESS_TOKEN unset)" >&2
 fi
 
+check_page_publish_scopes() {
+  local token="$1"
+  local app_id="${META_APP_ID:-}"
+  local app_secret="${META_APP_SECRET:-}"
+  if [[ -z "$app_id" || -z "$app_secret" ]]; then
+    echo "HINT: FB publish needs Page token scopes pages_manage_posts + pages_read_engagement" >&2
+    echo "  → Graph API Explorer: select Page → generate EAA token with those permissions" >&2
+    echo "  → Optional: set META_APP_ID + META_APP_SECRET for automatic scope check" >&2
+    return 0
+  fi
+  local ver="${META_GRAPH_API_VERSION:-v21.0}"
+  local body
+  body="$(curl -sS --max-time 20 -G "https://graph.facebook.com/${ver}/debug_token" \
+    --data-urlencode "input_token=${token}" \
+    --data-urlencode "access_token=${app_id}|${app_secret}" 2>&1)" || true
+  local missing
+  missing="$(python3 -c '
+import json, sys
+raw = sys.stdin.read()
+need = {"pages_manage_posts", "pages_read_engagement"}
+try:
+    d = json.loads(raw)
+except json.JSONDecodeError:
+    print("DEBUG_FAIL")
+    raise SystemExit(0)
+err = d.get("error")
+if err:
+    print("DEBUG_ERR")
+    print((err.get("message") or "debug_token failed").replace("\n", " "))
+    raise SystemExit(0)
+data = d.get("data") or {}
+raw_scopes = data.get("scopes") or []
+scopes = set()
+for s in raw_scopes:
+    if isinstance(s, str):
+        scopes.add(s)
+    elif isinstance(s, dict):
+        scopes.add(s.get("permission") or s.get("scope") or "")
+for g in data.get("granular_scopes") or []:
+    if isinstance(g, dict):
+        scopes.add(g.get("scope", ""))
+scopes.discard("")
+missing = sorted(need - scopes)
+if missing:
+    print("MISSING")
+    print(",".join(missing))
+else:
+    print("OK")
+' <<<"$body")"
+  local st msg
+  st="$(printf '%s\n' "$missing" | sed -n '1p')"
+  msg="$(printf '%s\n' "$missing" | sed -n '2p')"
+  case "$st" in
+    OK) echo "ok META_PAGE publish scopes (pages_manage_posts, pages_read_engagement)" ;;
+    MISSING)
+      echo "FAIL: META_PAGE_ACCESS_TOKEN missing scopes: ${msg}" >&2
+      echo "  → Re-generate Page token in Graph API Explorer with required permissions" >&2
+      return 1
+      ;;
+    DEBUG_ERR|DEBUG_FAIL)
+      echo "WARN: could not verify Page publish scopes (${msg:-parse error})" >&2
+      echo "HINT: FB feed/photo needs pages_manage_posts + pages_read_engagement" >&2
+      return 0
+      ;;
+  esac
+}
+
 if [[ -n "${META_PAGE_ACCESS_TOKEN:-}" && -n "${META_PAGE_ID:-}" ]] && is_page_access_token "${META_PAGE_ACCESS_TOKEN}"; then
   ran=$((ran + 1))
   ver="${META_GRAPH_API_VERSION:-v21.0}"
   check_token "META_PAGE_ACCESS_TOKEN" "$META_PAGE_ACCESS_TOKEN" \
     "https://graph.facebook.com/${ver}/${META_PAGE_ID}?fields=id,name&access_token=${META_PAGE_ACCESS_TOKEN}" \
     || errors=$((errors + 1))
+  check_page_publish_scopes "${META_PAGE_ACCESS_TOKEN}" || errors=$((errors + 1))
 elif [[ -n "${META_PAGE_ACCESS_TOKEN:-}" || -n "${META_PAGE_ID:-}" ]]; then
   echo "skip META_PAGE (wrong token type or missing PAGE_ID)" >&2
 else

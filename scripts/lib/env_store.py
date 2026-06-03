@@ -20,6 +20,13 @@ class EnvField:
 FIELD_SPECS: tuple[EnvField, ...] = (
     EnvField("N8N_ENCRYPTION_KEY", "n8n", True, True, "n8n encryption key"),
     EnvField("N8N_API_URL", "n8n", False, True, "n8n API base URL"),
+    EnvField(
+        "N8N_SYNC_API_URL",
+        "n8n",
+        False,
+        True,
+        "n8n API URL from Dev Container scripts (often host.docker.internal:5678)",
+    ),
     EnvField("N8N_API_KEY", "n8n", True, True, "n8n API key"),
     EnvField("WEBHOOK_URL", "n8n", False, True, "public webhook base URL"),
     EnvField("TELEGRAM_BOT_TOKEN", "telegram", True, True, "Telegram bot token"),

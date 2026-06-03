@@ -1,5 +1,7 @@
 # Engine failover (invoke-engine.sh)
 
+Runtime uses **global** `engines.copy` and `engines.svg` in `config/platform.yaml` (after `amctl apply`). Change order in the console: `http://127.0.0.1:8790/engines`. Per-platform `engines.platforms.*.provider` / `fallback` are **not** consumed by `invoke-engine.sh` (skill_mount only).
+
 ## Chain (hardcoded default)
 
 | Engine | Primary (platform.yaml) | Fallback order |

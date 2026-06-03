@@ -18,6 +18,7 @@
 4. 終端執行 `claude` 完成 Claude Code 登入（`/login`）。見 **[CLAUDE_CLI.md](CLAUDE_CLI.md)**。
 5. 執行 `codex` 完成 Codex CLI 登入（SVG 引擎用）。
 6. （可選）執行 `gemini` 完成 Gemini CLI 登入，見 **[GEMINI_CLI.md](GEMINI_CLI.md)**。
+7. 安裝檢查：`bash scripts/setup_wizard.sh --dry-run`；通過後可跑 `bash scripts/setup_wizard.sh`（見 **[INSTALL.md](INSTALL.md)**）。
 
 登入後同步至 n8n 可讀目錄（Docker Desktop virtiofs 常需 inject）：
 
@@ -29,7 +30,9 @@ docker compose restart n8n
 VERIFY_CLAUDE_STRICT=1 ./scripts/verify_n8n_claude_engine.sh
 ```
 
-產線建議：`GATEWAY_RUN_MODE=compose` + `docker compose up -d n8n gateway`（見 [HERMES_SETUP.md](HERMES_SETUP.md)）。`data/runs` 由 n8n 與 gateway 容器共用；宿主僅跑 `telegram_poll_forwarder.sh`。
+產線建議：`GATEWAY_RUN_MODE=compose` + `docker compose up -d n8n gateway`（見 [HERMES_SETUP.md](HERMES_SETUP.md)）。`data/runs` 由 n8n 與 gateway 容器共用。本機 poll 用 compose `forwarder` profile 或 `forwarder_ctl.sh`（見 [INSTALL.md](INSTALL.md)）。
+
+User console：`bash scripts/open_user_ui.sh`（port **8790**， uses `.venv/bin/python3` when present — see [VERIFY.md](VERIFY.md) § G）。
 
 ## 持久化 `~/.claude`、`~/.codex` 與 `~/.gemini`
 
@@ -64,9 +67,15 @@ gemini   # 首次：Login with Google 或設定 GEMINI_API_KEY
 容器掛載宿主 `docker.sock`（`DOCKER_HOST=unix:///var/run/docker-host.sock`），可在 Dev Container 內執行：
 
 ```bash
-sudo docker compose -f docker-compose.yml build
-sudo docker compose up -d
-bash scripts/sync_scripts_to_n8n.sh   # 新增腳本後同步進 n8n（腳本會自動用 sudo）
+sudo docker compose -f docker-compose.yml build n8n gateway
+sudo docker compose up -d n8n gateway
+bash scripts/post_docker_rebuild.sh   # apply + perms + secrets + verify（重建後首選）
+```
+
+**未 rebuild、只改 repo 腳本時**才需要：
+
+```bash
+bash scripts/sync_scripts_to_n8n.sh   # docker cp scripts → 運行中容器（腳本會自動用 sudo）
 ```
 
 （`vscode` 透過 sudo 存取宿主 Docker socket；**勿**寫成 `bash docker compose ...`。見 `.devcontainer/Dockerfile` 的 sudoers 設定。）

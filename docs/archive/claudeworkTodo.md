@@ -1,3 +1,5 @@
+> **Archived.** Current docs: [INSTALL.md](../INSTALL.md), [VERIFY.md](../VERIFY.md), or [README.md#architecture](../../README.md#architecture).
+
 # claude-work TODO：B′ 實機測試指令
 
 給能跑起 n8n 2.21.x + CLI 的環境（Dev Container / Linux host）的 agent 執行。

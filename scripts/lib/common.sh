@@ -7,8 +7,13 @@ export LC_ALL="${LC_ALL:-C.UTF-8}"
 
 REPO_ROOT="${AUTO_MEDIA_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 if [[ -z "${DATA_ROOT:-}" ]]; then
+  # Dev Container often has root-owned /data/runs (docker); host scripts must use repo data.
   if [[ -d "/data/runs" || -d "/data/config" ]]; then
-    DATA_ROOT="/data"
+    if [[ -w "/data/runs" ]] 2>/dev/null || { [[ ! -d "/data/runs" ]] && [[ -w "/data" ]] 2>/dev/null; }; then
+      DATA_ROOT="/data"
+    else
+      DATA_ROOT="${REPO_ROOT}/data"
+    fi
   else
     DATA_ROOT="${REPO_ROOT}/data"
   fi
