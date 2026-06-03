@@ -73,6 +73,28 @@ docker compose build n8n gateway
 docker compose up -d n8n gateway
 ```
 
+## Troubleshooting Release CI
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| Actions **buildx** + `build-cache-backends` | `type=gha` cache without `actions: write` | Fixed in `release.yml`; merge fix, re-run Release |
+| `docker pull` **denied** | Workflow failed or GHCR package still **private** | Actions green → set package **Public** under GitHub Packages |
+| No GitHub Release | `github-release` skipped after build failure | Fix build, re-trigger tag or **workflow_dispatch** |
+
+Re-run after fixing workflow on `main`:
+
+```bash
+# Option A: new patch tag
+git pull origin main
+git tag -a v0.1.1 -m "v0.1.1"
+git push origin v0.1.1
+
+# Option B: move v0.1.0 (only if no successful publish yet)
+git push origin :refs/tags/v0.1.0
+git tag -fa v0.1.0 -m "v0.1.0"
+git push origin v0.1.0 -f
+```
+
 ## Not distributed
 
 - No PyPI/npm for `auto-media-tools` (repo-only `uv run`).
