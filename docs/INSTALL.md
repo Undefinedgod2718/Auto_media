@@ -22,7 +22,7 @@ preflight (env-check)
   → stop_old_dashboard + compose build/up n8n+gateway (--remove-orphans)
   → prompt llm / meta / threads
   → OAuth sync → conditional inject_n8n_secrets + n8n health wait
-  → verify CLI (strict) → verify Telegram (strict) → verify Meta (warn)
+  → verify CLI (strict) → verify Telegram (strict) → verify Meta (warn; Meta OK does not mean THREADS was tested)
   → HITL ingress (webhook or forwarder profile)
   → wizard_finalize OR post_docker_rebuild (FORCE_REBUILD only)
   → doctor → data/state/install.json

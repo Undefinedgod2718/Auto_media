@@ -9,6 +9,20 @@ cd "$ROOT"
 fail() { echo "verify_mcp_evidence: FAIL — $*" >&2; exit 1; }
 ok() { echo "verify_mcp_evidence: $*"; }
 
+# shellcheck source=scripts/lib/docker_helpers.sh
+source "$ROOT/scripts/lib/docker_helpers.sh"
+init_docker_compose "$ROOT"
+echo "verify_mcp_evidence: docker ps (first 3 lines):"
+docker ps 2>&1 | head -3 || echo "  (docker ps failed)"
+echo "verify_mcp_evidence: sudo docker ps (first 3 lines):"
+sudo docker ps 2>&1 | head -3 || echo "  (sudo docker ps failed)"
+if [[ "$HAVE_DOCKER_COMPOSE" == "1" ]]; then
+  echo "verify_mcp_evidence: compose prefix: ${DOCKER_COMPOSE[*]}"
+  ok "compose ps -q n8n: PASS"
+else
+  fail "docker compose probe failed (tried docker / sudo -n / sudo)"
+fi
+
 [[ -f "$ROOT/scripts/mcp_automedia.py" ]] || fail "missing scripts/mcp_automedia.py"
 
 # E2: automedia MCP stdio smoke (initialize)

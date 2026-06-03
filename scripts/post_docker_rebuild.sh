@@ -23,18 +23,19 @@ done
 log() { echo "post_docker_rebuild: $*"; }
 warn() { echo "post_docker_rebuild: WARN — $*" >&2; }
 
-DOCKER=(docker)
-if ! docker ps >/dev/null 2>&1; then
-  if sudo -n docker ps >/dev/null 2>&1; then
-    DOCKER=(sudo docker)
-  fi
+# shellcheck source=scripts/lib/docker_helpers.sh
+source "$ROOT/scripts/lib/docker_helpers.sh"
+init_docker_compose "$ROOT"
+if [[ "$HAVE_DOCKER_COMPOSE" != "1" ]]; then
+  warn "docker compose unavailable — cannot bring up n8n/gateway"
+  exit 1
 fi
 
 log "remove legacy dashboard container (8788 compose service)"
 bash "$ROOT/scripts/stop_old_dashboard.sh" 2>/dev/null || true
 
 log "ensure n8n + gateway up (--remove-orphans drops stale auto_media-dashboard-1)"
-"${DOCKER[@]}" compose -f "$ROOT/docker-compose.yml" up -d --remove-orphans n8n gateway
+"${DOCKER_COMPOSE[@]}" up -d --remove-orphans n8n gateway
 
 log "amctl apply"
 bash "$ROOT/scripts/amctl.sh" apply
@@ -45,7 +46,7 @@ bash "$ROOT/scripts/fix-data-perms.sh"
 if [[ "$SKIP_SECRETS" == "0" && -f "$ROOT/.env" ]]; then
   log "inject_n8n_secrets + restart n8n"
   bash "$ROOT/scripts/inject_n8n_secrets.sh"
-  "${DOCKER[@]}" compose -f "$ROOT/docker-compose.yml" restart n8n
+  "${DOCKER_COMPOSE[@]}" restart n8n
 else
   [[ "$SKIP_SECRETS" == "1" ]] && warn "skipped secrets inject (--skip-secrets)"
 fi
