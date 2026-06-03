@@ -9,7 +9,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 RUN_ID="${1:-}"
 N8N_CONTAINER="${N8N_CONTAINER:-auto_media-n8n-1}"
 GATEWAY_CONTAINER="${GATEWAY_CONTAINER:-auto_media-gateway-1}"
-REQUIRED="TASK.md post.md art.svg post.png"
+REQUIRED_TEXT="TASK.md post.md"
 
 [[ -n "$RUN_ID" ]] || json_err "usage: verify_runs_mount_parity.sh <run_id>"
 
@@ -36,7 +36,7 @@ if [[ -d "${DATA_ROOT}/runs/${RUN_ID}" ]]; then
 fi
 
 errors=()
-for f in $REQUIRED; do
+for f in $REQUIRED_TEXT; do
   if ! docker_exec "$N8N_CONTAINER" test -f "/data/runs/${RUN_ID}/${f}" 2>/dev/null; then
     errors+=("n8n missing ${f}")
   fi
@@ -44,6 +44,25 @@ for f in $REQUIRED; do
     errors+=("gateway missing ${f}")
   fi
 done
+
+has_image_any() {
+  local c="$1"
+  docker_exec "$c" sh -c "
+    test -f '/data/runs/${RUN_ID}/post.png' \
+      || test -f '/data/runs/${RUN_ID}/post.jpg' \
+      || test -f '/data/runs/${RUN_ID}/post.jpeg' \
+      || ls '/data/runs/${RUN_ID}/carousel'/*.png >/dev/null 2>&1 \
+      || ls '/data/runs/${RUN_ID}/carousel'/*.jpg >/dev/null 2>&1 \
+      || ls '/data/runs/${RUN_ID}/carousel'/*.jpeg >/dev/null 2>&1
+  " 2>/dev/null
+}
+
+if ! has_image_any "$N8N_CONTAINER"; then
+  errors+=("n8n missing image artifact (need post.png/jpg/jpeg or carousel/*.png/jpg/jpeg)")
+fi
+if ! has_image_any "$GATEWAY_CONTAINER"; then
+  errors+=("gateway missing image artifact (need post.png/jpg/jpeg or carousel/*.png/jpg/jpeg)")
+fi
 
 if [[ "$n8n_files" != "$gw_files" ]]; then
   errors+=("file list mismatch n8n=[${n8n_files}] gateway=[${gw_files}]")

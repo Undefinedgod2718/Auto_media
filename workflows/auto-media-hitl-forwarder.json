@@ -192,7 +192,7 @@
     },
     {
       "parameters": {
-        "command": "=`/bin/bash /data/scripts/read_hitl_reply_map.sh --message-id ${String($json.reply_to_message_id || '')}`"
+        "command": "=/bin/bash /data/scripts/read_hitl_reply_map.sh --message-id \"{{ String($json.reply_to_message_id || '') }}\""
       },
       "id": "read-reply-map",
       "name": "Read HITL reply map",

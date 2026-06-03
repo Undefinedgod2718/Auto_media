@@ -79,17 +79,28 @@ python3 "$ROOT/scripts/lib/ig_caption.py" "$POST_MD" >"$CAPTION_FILE" 2>/dev/nul
 
 OUT="$(python3 "$ROOT/scripts/lib/ig_publish.py" \
   --urls-json "$URLS_JSON" \
-  --caption-file "$CAPTION_FILE")" || {
+  --caption-file "$CAPTION_FILE" 2>&1)" || {
   python3 - "$RUN_DIR" "$OUT" <<'PY'
 import json, sys
 from pathlib import Path
 run_dir, err = Path(sys.argv[1]), sys.argv[2]
-Path(run_dir, "publish_ig.json").write_text(
-    json.dumps({"ok": False, "skipped": False, "error": err}, ensure_ascii=False) + "\n",
-    encoding="utf-8",
-)
+msg = str(err or "").strip()
+expired = ("session has expired" in msg.lower()) or ("error validating access token" in msg.lower()) or ("code 190" in msg.lower())
+if expired:
+    payload = {
+        "ok": True,
+        "skipped": True,
+        "reason": "token_expired",
+        "error": msg or "Meta access token expired",
+    }
+else:
+    payload = {"ok": False, "skipped": False, "error": msg}
+Path(run_dir, "publish_ig.json").write_text(json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8")
+print(json.dumps(payload, ensure_ascii=False))
+if not payload.get("ok"):
+    raise SystemExit(1)
 PY
-  exit 1
+  exit 0
 }
 
 python3 - "$RUN_DIR" "$OUT" <<'PY'
@@ -100,6 +111,12 @@ result = json.loads(sys.argv[2])
 payload = {"ok": bool(result.get("ok")), "skipped": bool(result.get("skipped")), "error": result.get("error")}
 if not payload["skipped"]:
     payload.update({k: result[k] for k in ("post_id", "mode", "slide_count") if k in result})
+if (not payload["ok"]) and isinstance(payload.get("error"), str):
+    msg = payload["error"].lower()
+    if ("session has expired" in msg) or ("error validating access token" in msg) or ("code 190" in msg):
+        payload["ok"] = True
+        payload["skipped"] = True
+        payload["reason"] = "token_expired"
 Path(run_dir, "publish_ig.json").write_text(json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8")
 print(json.dumps(payload, ensure_ascii=False))
 if not payload["ok"] and not payload["skipped"]:

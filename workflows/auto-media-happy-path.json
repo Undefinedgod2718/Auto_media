@@ -502,30 +502,13 @@
     },
     {
       "parameters": {
-        "mode": "manual",
-        "duplicateItem": false,
-        "assignments": {
-          "assignments": [
-            {
-              "id": "feedback_text",
-              "name": "feedback_text",
-              "value": "={{ $json.body?.feedback_text || $json.query?.feedback_text || $json.feedback_text || '' }}",
-              "type": "string"
-            },
-            {
-              "id": "human_decision",
-              "name": "human_decision",
-              "value": "={{ $json.body?.decision || $json.decision || 'revise' }}",
-              "type": "string"
-            }
-          ]
-        },
-        "options": {}
+        "mode": "runOnceForEachItem",
+        "jsCode": "const input = $input.item.json || {};\nconst { json: _dropJsonKey, ...rest } = input;\nconst feedback = String(input.body?.feedback_text ?? input.query?.feedback_text ?? input.feedback_text ?? '');\nconst decision = String(input.body?.decision ?? input.decision ?? 'revise');\nreturn {\n  json: { ...rest, feedback_text: feedback, human_decision: decision },\n  binary: {\n    feedback_text: {\n      data: Buffer.from(feedback, 'utf8').toString('base64'),\n      mimeType: 'text/plain',\n      fileName: 'feedback.txt',\n    },\n  },\n};"
       },
       "id": "set-feedback-text",
       "name": "Set feedback text",
-      "type": "n8n-nodes-base.set",
-      "typeVersion": 3.4,
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
       "position": [
         3420,
         320
@@ -837,7 +820,7 @@
     },
     {
       "parameters": {
-        "command": "=/bin/bash /data/scripts/append_review_audit.sh --run-id \"{{ $json.run_id }}\" --actor hermes --decision \"{{ $json.verdict_hint }}\" --review-round \"{{ $json.review_round }}\" --risk-level \"{{ $json.risk_level }}\" --reasons-json \"{{ JSON.stringify($json.reasons || []) }}\" --suggestions-json \"{{ JSON.stringify($json.suggestions || []) }}\" --rerun-scope \"{{ $json.rerun_scope_hint }}\""
+        "command": "=/bin/bash /data/scripts/append_review_audit.sh --run-id \"{{ $json.run_id }}\" --actor hermes --decision \"{{ $json.verdict_hint }}\" --review-round \"{{ $json.review_round }}\" --risk-level \"{{ $json.risk_level }}\" --reasons-b64 \"{{ Buffer.from(JSON.stringify($json.reasons || []), 'utf8').toString('base64') }}\" --suggestions-b64 \"{{ Buffer.from(JSON.stringify($json.suggestions || []), 'utf8').toString('base64') }}\" --rerun-scope \"{{ $json.rerun_scope_hint }}\""
       },
       "id": "audit-hermes-prereview",
       "name": "Audit hermes prereview",
@@ -1009,7 +992,7 @@
     },
     {
       "parameters": {
-        "command": "=/bin/bash /data/scripts/append_review_audit.sh --run-id \"{{ $json.run_id }}\" --actor hermes --decision revise --review-round \"{{ $json.review_round || 1 }}\" --rerun-scope \"{{ $json.rerun_scope || 'copy_only' }}\" --suggestions-json \"{{ JSON.stringify($json.revision_plan || []) }}\""
+        "command": "=/bin/bash /data/scripts/append_review_audit.sh --run-id \"{{ $json.run_id }}\" --actor hermes --decision revise --review-round \"{{ $json.review_round || 1 }}\" --rerun-scope \"{{ $json.rerun_scope || 'copy_only' }}\" --suggestions-b64 \"{{ Buffer.from(JSON.stringify($json.revision_plan || []), 'utf8').toString('base64') }}\""
       },
       "id": "audit-hermes-revision",
       "name": "Audit hermes revision",

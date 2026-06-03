@@ -17,9 +17,11 @@ RUN apt-get update \
 RUN python3 -m pip install --no-cache-dir PyYAML
 
 COPY scripts/ /app/scripts/
+COPY config/skills/ /app/config/skills/
+COPY config/platform.yaml /app/config/platform.yaml
 COPY data/config/platform_limits.json /data/config/platform_limits.json
 COPY docker/gateway/entrypoint.sh /entrypoint.sh
-RUN chmod -R a+rx /app/scripts && chmod +x /entrypoint.sh
+RUN chmod -R a+rx /app/scripts /app/config && chmod +x /entrypoint.sh
 
 ENV LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \

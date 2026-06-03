@@ -43,6 +43,9 @@ summary = {
         "post_md": f"/data/runs/{run_id}/post.md",
         "art_svg": f"/data/runs/{run_id}/art.svg",
         "post_png": f"/data/runs/{run_id}/post.png",
+        "post_jpg": f"/data/runs/{run_id}/post.jpg",
+        "post_jpeg": f"/data/runs/{run_id}/post.jpeg",
+        "carousel_dir": f"/data/runs/{run_id}/carousel",
     },
 }
 Path(summary_file).write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

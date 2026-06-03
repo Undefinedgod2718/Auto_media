@@ -22,6 +22,14 @@ while [[ $# -gt 0 ]]; do
     --risk-level) RISK_LEVEL="$2"; shift 2 ;;
     --reasons-json) REASONS="$2"; shift 2 ;;
     --suggestions-json) SUGGESTIONS="$2"; shift 2 ;;
+    --reasons-b64)
+      REASONS="$(python3 -c "import base64,sys; print(base64.b64decode(sys.argv[1]).decode('utf-8'))" "$2" 2>/dev/null || echo "[]")"
+      shift 2
+      ;;
+    --suggestions-b64)
+      SUGGESTIONS="$(python3 -c "import base64,sys; print(base64.b64decode(sys.argv[1]).decode('utf-8'))" "$2" 2>/dev/null || echo "[]")"
+      shift 2
+      ;;
     --rerun-scope) RERUN_SCOPE="$2"; shift 2 ;;
     --high-risk-approved) HIGH_RISK_APPROVED="$2"; shift 2 ;;
     --stop-reason) STOP_REASON="$2"; shift 2 ;;
@@ -33,7 +41,10 @@ done
 RUN_DIR="$(ensure_run_dir "$RUN_ID")"
 AUDIT_FILE="${RUN_DIR}/review_audit.jsonl"
 POST_FILE="${RUN_DIR}/post.md"
-SVG_FILE="${RUN_DIR}/art.svg"
+ART_SVG_FILE="${RUN_DIR}/art.svg"
+POST_PNG_FILE="${RUN_DIR}/post.png"
+POST_JPG_FILE="${RUN_DIR}/post.jpg"
+POST_JPEG_FILE="${RUN_DIR}/post.jpeg"
 ASSESS_FILE="${RUN_DIR}/hermes_assessment.json"
 
 # B-prime: Gateway runs Hermes on host; n8n skips Parse Hermes assessment node.
@@ -72,14 +83,14 @@ if [[ "$HIGH_RISK_APPROVED" == "false" && "$DECISION" == "approve" && "$RISK_LEV
   HIGH_RISK_APPROVED="true"
 fi
 
-python3 - "$AUDIT_FILE" "$POST_FILE" "$SVG_FILE" "$RUN_ID" "$ACTOR" "$DECISION" "$REVIEW_ROUND" "$RISK_LEVEL" "$REASONS" "$SUGGESTIONS" "$RERUN_SCOPE" "$HIGH_RISK_APPROVED" "$STOP_REASON" <<'PYCODE'
+python3 - "$AUDIT_FILE" "$POST_FILE" "$ART_SVG_FILE" "$POST_PNG_FILE" "$POST_JPG_FILE" "$POST_JPEG_FILE" "$RUN_ID" "$ACTOR" "$DECISION" "$REVIEW_ROUND" "$RISK_LEVEL" "$REASONS" "$SUGGESTIONS" "$RERUN_SCOPE" "$HIGH_RISK_APPROVED" "$STOP_REASON" <<'PYCODE'
 import hashlib
 import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-(audit_file, post_file, svg_file, run_id, actor, decision, review_round, risk_level, reasons_json, suggestions_json, rerun_scope, high_risk_approved, stop_reason) = sys.argv[1:]
+(audit_file, post_file, art_svg_file, post_png_file, post_jpg_file, post_jpeg_file, run_id, actor, decision, review_round, risk_level, reasons_json, suggestions_json, rerun_scope, high_risk_approved, stop_reason) = sys.argv[1:]
 
 def h(path: str) -> str:
     p = Path(path)
@@ -103,7 +114,13 @@ entry = {
     "reasons": reasons,
     "suggestions": suggestions,
     "rerun_scope": rerun_scope,
-    "content_hash_after": {"post_md": h(post_file), "art_svg": h(svg_file)},
+    "content_hash_after": {
+        "post_md": h(post_file),
+        "art_svg": h(art_svg_file),
+        "post_png": h(post_png_file),
+        "post_jpg": h(post_jpg_file),
+        "post_jpeg": h(post_jpeg_file),
+    },
     "high_risk_approved": str(high_risk_approved).lower() == "true",
     "stop_reason": stop_reason,
     "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),

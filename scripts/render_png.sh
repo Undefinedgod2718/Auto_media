@@ -17,7 +17,11 @@ RUN_DIR="$(ensure_run_dir "$RUN_ID")"
 SVG="${RUN_DIR}/art.svg"
 PNG="${RUN_DIR}/post.png"
 
-[[ -f "$SVG" ]] || json_err "missing art.svg"
+if [[ ! -f "$SVG" ]]; then
+  # PNG-first flows may already provide post.png directly; art.svg is optional.
+  [[ -f "$PNG" ]] && { json_ok "$PNG"; exit 0; }
+  json_err "missing image source: need post.png or art.svg"
+fi
 
 if [[ "${AUTO_MEDIA_MOCK:-0}" == "1" ]]; then
   cp "$SVG" "${RUN_DIR}/post.mock.svg"

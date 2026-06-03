@@ -31,7 +31,11 @@ def count_posts(part1: str) -> int:
     posts = re.findall(r"###\s*貼文\s*\d+", part1, re.I)
     if posts:
         return len(posts)
-    return len(re.findall(r"##\s*第\s*\d+\s*則", part1))
+    numbered = len(re.findall(r"##\s*第\s*\d+\s*則", part1))
+    if numbered:
+        return numbered
+    # Allow single-block post format (no numbered sections).
+    return 1 if part1.strip() else 0
 
 
 def validate_structure(post_md: Path, run_dir: Path | None = None) -> dict:
