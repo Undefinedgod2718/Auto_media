@@ -11,7 +11,9 @@ bash scripts/setup_wizard.sh --dry-run   # no writes; see docs/VERIFY.md
 bash scripts/setup_wizard.sh             # interactive install
 ```
 
-Non-interactive: `bash scripts/install.sh`. After `docker compose build`: `bash scripts/post_docker_rebuild.sh`. Details: [docs/INSTALL.md](docs/INSTALL.md).
+Non-interactive: `bash scripts/install.sh`. After image update: `bash scripts/post_docker_rebuild.sh`. Details: [docs/INSTALL.md](docs/INSTALL.md).
+
+**Low-spec / production hosts:** pre-built images on GHCR — set `AUTO_MEDIA_VERSION=vX.Y.Z` in `.env` and `docker compose pull` (no local build). See [docs/RELEASE.md](docs/RELEASE.md).
 
 ### 2. Environment check
 
@@ -55,8 +57,12 @@ uv sync
 ### 4. Build and run n8n
 
 ```bash
-docker compose build
-docker compose up -d
+# Dev: local build (default AUTO_MEDIA_VERSION=local)
+docker compose build n8n gateway
+docker compose up -d n8n gateway
+
+# Production: pull from GHCR (see docs/RELEASE.md)
+# AUTO_MEDIA_VERSION=v0.1.0 docker compose pull n8n gateway && docker compose up -d n8n gateway
 ```
 
 Open [http://localhost:5678](http://localhost:5678) — follow **[N8N_WORKFLOW_SETUP.md](docs/N8N_WORKFLOW_SETUP.md)** to build the workflow in the web UI (no JSON import required). Configure Telegram credentials in n8n and `.env`.
@@ -132,6 +138,7 @@ References: [n8n](https://github.com/n8n-io/n8n) · [Hermes Agent](https://githu
 **Install / verify**
 
 - [INSTALL.md](docs/INSTALL.md) — setup wizard, HITL, forwarder, 8790 console
+- [RELEASE.md](docs/RELEASE.md) — GHCR images, SemVer tags, pull-first on low-spec hosts
 - [VERIFY.md](docs/VERIFY.md) — smoke, doctor, strict verify, production gates
 - [USER.md](USER.md) — non-engineer UI and tokens
 

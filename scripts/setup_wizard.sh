@@ -7,7 +7,7 @@ export AUTO_MEDIA_ROOT="$ROOT"
 export DATA_ROOT="${DATA_ROOT:-$ROOT/data}"
 
 INSTALL_STATE="$DATA_ROOT/state/install.json"
-SCHEMA_VERSION=1
+SCHEMA_VERSION=2
 MAX_RETRY="${WIZARD_VERIFY_RETRIES:-3}"
 DASHBOARD_PORT="${AUTO_MEDIA_DASHBOARD_PORT:-8790}"
 DRY_RUN="${WIZARD_DRY_RUN:-0}"
@@ -24,6 +24,10 @@ is_dry() { [[ "$DRY_RUN" == "1" ]]; }
 
 # shellcheck source=scripts/lib/docker_helpers.sh
 source "$ROOT/scripts/lib/docker_helpers.sh"
+# shellcheck source=scripts/lib/image_policy.sh
+source "$ROOT/scripts/lib/image_policy.sh"
+# shellcheck source=scripts/lib/release_guard.sh
+source "$ROOT/scripts/lib/release_guard.sh"
 init_docker_compose "$ROOT"
 
 dry_run_list_missing() {
@@ -38,6 +42,8 @@ load_install_state() {
   WIZARD_PREV_SCHEMA=0
   WIZARD_STACK_BUILT=0
   WIZARD_PREV_GIT_SHA=""
+  WIZARD_PREV_RELEASE_TAG=""
+  WIZARD_PREV_IMAGE_TAG=""
   if [[ ! -f "$INSTALL_STATE" ]]; then
     return 0
   fi
@@ -55,6 +61,8 @@ if p.is_file():
 print(f"WIZARD_PREV_SCHEMA={int(d.get('schema_version', 0))}")
 print(f"WIZARD_STACK_BUILT={1 if d.get('stack_built') else 0}")
 print(f"WIZARD_PREV_GIT_SHA={shlex.quote(str(d.get('git_sha') or ''))}")
+print(f"WIZARD_PREV_RELEASE_TAG={shlex.quote(str(d.get('release_tag') or ''))}")
+print(f"WIZARD_PREV_IMAGE_TAG={shlex.quote(str(d.get('image_tag') or ''))}")
 PY
   )"
 }
@@ -63,6 +71,9 @@ run_migrations() {
   if [[ "$WIZARD_PREV_SCHEMA" -lt 1 ]]; then
     log "migration_0_to_1: align install state (no data migration required)"
   fi
+  if [[ "$WIZARD_PREV_SCHEMA" -lt 2 ]]; then
+    log "migration_1_to_2: add release_tag / image_tag fields (no data migration required)"
+  fi
 }
 
 warn_git_sha_drift() {
@@ -70,7 +81,15 @@ warn_git_sha_drift() {
   head="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo "")"
   if [[ -n "$WIZARD_PREV_GIT_SHA" && -n "$head" && "$WIZARD_PREV_GIT_SHA" != "$head" ]]; then
     log "warn: git ${WIZARD_PREV_GIT_SHA} -> ${head}; recommend: WIZARD_FORCE_REBUILD=1 bash scripts/setup_wizard.sh"
-    log "  or: docker compose build n8n gateway && bash scripts/post_docker_rebuild.sh"
+    log "  or: align AUTO_MEDIA_VERSION + pull/build — see docs/RELEASE.md"
+  fi
+}
+
+warn_release_drift() {
+  warn_release_git_drift "$ROOT" "$INSTALL_STATE"
+  if [[ -n "${WIZARD_PREV_RELEASE_TAG:-}" && -n "${AUTO_MEDIA_VERSION:-}" && "${AUTO_MEDIA_VERSION}" =~ ^v[0-9] \
+    && "$WIZARD_PREV_RELEASE_TAG" != "${AUTO_MEDIA_VERSION}" ]]; then
+    log "warn: install release ${WIZARD_PREV_RELEASE_TAG} != AUTO_MEDIA_VERSION=${AUTO_MEDIA_VERSION}"
   fi
 }
 
@@ -92,6 +111,8 @@ data = {
     "installed_at": prev.get("installed_at") or now,
     "last_run_at": now,
     "git_sha": os.environ.get("GIT_SHA", ""),
+    "release_tag": os.environ.get("RELEASE_TAG", "") or prev.get("release_tag", ""),
+    "image_tag": os.environ.get("IMAGE_TAG", "") or prev.get("image_tag", ""),
     "stack_built": True,
 }
 p.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
@@ -137,6 +158,8 @@ compose_up_services() {
     log "docker compose unavailable — skip compose"
     return 1
   fi
+  auto_media_load_env_file "$ROOT"
+  auto_media_apply_image_env
   bash "$ROOT/scripts/stop_old_dashboard.sh" 2>/dev/null || true
   local up_args=(up -d --remove-orphans)
   if [[ "$force" == "force-recreate" ]]; then
@@ -150,7 +173,9 @@ compose_up() {
     log "docker compose unavailable — skip compose"
     return 1
   fi
-  "${DOCKER_COMPOSE[@]}" build n8n gateway
+  auto_media_load_env_file "$ROOT"
+  auto_media_apply_image_env
+  auto_media_compose_prepare_images "$ROOT" "${DOCKER_COMPOSE[@]}"
   compose_up_services
 }
 
@@ -276,7 +301,7 @@ ensure_compose_stack() {
   fi
   if [[ "${WIZARD_FORCE_REBUILD:-0}" != "1" && "$WIZARD_STACK_BUILT" == "1" ]]; then
     if "${DOCKER_COMPOSE[@]}" ps -q n8n 2>/dev/null | grep -q .; then
-      log "idempotent: stack_built — skip image build, ensure n8n+gateway up"
+      log "idempotent: stack_built — skip image build/pull, ensure n8n+gateway up"
       compose_up_services
       return 0
     fi
@@ -326,7 +351,11 @@ main() {
     log "existing install state: $INSTALL_STATE (schema=$WIZARD_PREV_SCHEMA, idempotent re-run)"
   fi
   run_migrations
+  auto_media_load_env_file "$ROOT"
+  auto_media_apply_image_env
+  release_guard_report "$ROOT" "$INSTALL_STATE" || true
   warn_git_sha_drift
+  warn_release_drift
 
   log "preflight"
   bash "$ROOT/scripts/env-check.sh" || {
@@ -341,6 +370,7 @@ main() {
     log "dry-run: missing env keys (llm, meta, threads)"
     dry_run_list_missing "llm meta threads" || true
     log "dry-run: would run amctl apply + compose + OAuth (skipped)"
+    release_guard_report "$ROOT" "$INSTALL_STATE" || true
     dry_run_verify || {
       log "dry-run: one or more verify scripts reported failure (see JSON above)"
       exit 1
@@ -398,9 +428,13 @@ main() {
   log "doctor"
   bash "$ROOT/scripts/amctl.sh" doctor || log "warn: doctor reported issues"
 
+  auto_media_load_env_file "$ROOT"
+  auto_media_apply_image_env
   export SCHEMA_VERSION="$SCHEMA_VERSION"
   export INSTALL_STATE="$INSTALL_STATE"
   export GIT_SHA="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo "")"
+  export RELEASE_TAG="${AUTO_MEDIA_IMAGE_TAG:-}"
+  export IMAGE_TAG="${AUTO_MEDIA_IMAGE_TAG:-}"
   write_install_state
 
   echo ""

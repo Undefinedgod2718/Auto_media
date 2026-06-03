@@ -5,7 +5,7 @@ services:
       dockerfile: docker/n8n/Dockerfile
       args:
         INSTALL_CODEX: ${INSTALL_CODEX:-true}
-    image: auto-media-n8n:local
+    image: ${AUTO_MEDIA_N8N_IMAGE:-auto-media-n8n:local}
     restart: unless-stopped
     user: "0:0"
     entrypoint: ["/entrypoint.sh"]
@@ -80,7 +80,7 @@ services:
     build:
       context: .
       dockerfile: docker/gateway/Dockerfile
-    image: auto-media-gateway:local
+    image: ${AUTO_MEDIA_GATEWAY_IMAGE:-auto-media-gateway:local}
     restart: unless-stopped
     user: "0:0"
     entrypoint: ["/entrypoint.sh"]
@@ -112,7 +112,7 @@ services:
       start_period: 15s
 
   forwarder:
-    image: auto-media-gateway:local
+    image: ${AUTO_MEDIA_GATEWAY_IMAGE:-auto-media-gateway:local}
     build:
       context: .
       dockerfile: docker/gateway/Dockerfile

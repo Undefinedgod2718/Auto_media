@@ -69,6 +69,28 @@ bash scripts/setup_wizard.sh --dry-run
 
 Runs env-check, lists missing env keys (`n8n`, `telegram`, `gateway`, `llm`, `meta`, `threads`), runs CLI/Telegram verify (warn-only), Meta verify (report only), then doctor. Meta verify passing does not mean THREADS tokens were tested (see `skip THREADS` in output). After a real wizard run: `bash scripts/open_user_ui.sh` and `bash scripts/check_dashboard.sh`.
 
+### D2. Release guard (GHCR / SemVer)
+
+```bash
+bash scripts/lib/release_guard.sh
+```
+
+**Pass when:** command exits 0; prints installed `release_tag` (if `data/state/install.json` exists) and GitHub latest tag when API reachable.
+
+**Offline:** must not fail wizard dry-run; uses `AUTO_MEDIA_VERSION` from `.env` only.
+
+**Pull-first stack** (after a published tag exists on GHCR):
+
+```bash
+# .env: AUTO_MEDIA_VERSION=v0.1.0
+docker compose pull n8n gateway
+docker compose up -d n8n gateway
+bash scripts/post_docker_rebuild.sh
+bash scripts/verify_mcp_evidence.sh
+```
+
+Align git tree with the same tag before pull. See [RELEASE.md](RELEASE.md).
+
 ### E. Strict verify (wizard completion)
 
 After stack is up and `.env` is filled:

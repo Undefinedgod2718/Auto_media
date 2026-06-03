@@ -37,7 +37,7 @@ preflight (env-check)
 
 Re-run is idempotent: reads `data/state/install.json`; skips image rebuild when `stack_built` and n8n is already up. Force rebuild: `WIZARD_FORCE_REBUILD=1` (runs full `post_docker_rebuild` at end).
 
-If `install.json` `git_sha` differs from current `git rev-parse`, wizard warns to rebuild (`post_docker_rebuild` or `WIZARD_FORCE_REBUILD=1`).
+If `install.json` `git_sha` differs from current `git rev-parse`, wizard warns to rebuild (`post_docker_rebuild` or `WIZARD_FORCE_REBUILD=1`). Prefer **SemVer** alignment: `release_tag` in `install.json` should match `AUTO_MEDIA_VERSION` and `git checkout tags/vX.Y.Z` — see [RELEASE.md](RELEASE.md).
 
 ## Preflight
 
@@ -55,12 +55,27 @@ Requires Docker, Python 3, **curl**, jq, and CLI tools as listed. Fix failures b
 
 ## Docker stack
 
+**Development (local build):**
+
 ```bash
+AUTO_MEDIA_VERSION=local
 docker compose build n8n gateway
 docker compose up -d n8n gateway
 ```
 
-Wizard runs this automatically. Gateway listens on **8787** (host / docker network). User console is **not** in compose; it runs on the host at **8790** via `open_user_ui.sh`.
+**Production / low-spec (GHCR pull, no local compile):** see [RELEASE.md](RELEASE.md).
+
+```bash
+# .env: AUTO_MEDIA_VERSION=v0.1.0  AUTO_MEDIA_IMAGE_POLICY=auto
+git fetch --tags && git checkout tags/v0.1.0
+docker compose pull n8n gateway
+docker compose up -d --remove-orphans n8n gateway
+bash scripts/post_docker_rebuild.sh
+```
+
+Wizard runs build or pull via `AUTO_MEDIA_IMAGE_POLICY` automatically. Gateway listens on **8787** (host / docker network). User console is **not** in compose; it runs on the host at **8790** via `open_user_ui.sh`.
+
+`data/state/install.json` (schema v2) stores `release_tag` / `image_tag` for upgrade guards; wizard calls `scripts/lib/release_guard.sh` against GitHub Releases when online.
 
 ## OAuth (interactive handoff)
 

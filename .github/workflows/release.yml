@@ -1,0 +1,106 @@
+# Publish GHCR images + GitHub Release on SemVer tag push (v*).
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - service: n8n
+            dockerfile: docker/n8n/Dockerfile
+            image: ghcr.io/undefinedgod2718/auto-media-n8n
+          - service: gateway
+            dockerfile: docker/gateway/Dockerfile
+            image: ghcr.io/undefinedgod2718/auto-media-gateway
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ matrix.image }}
+          tags: |
+            type=raw,value=${{ github.ref_name }}
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: ${{ matrix.service == 'n8n' && 'INSTALL_CODEX=true' || '' }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  github-release:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Bundle workflow JSON
+        run: |
+          mkdir -p dist
+          zip -j dist/auto-media-workflows.zip \
+            workflows/auto-media-happy-path.json \
+            workflows/auto-media-hitl-forwarder.json
+
+      - name: Generate release notes
+        id: notes
+        run: |
+          prev="$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo '')"
+          {
+            echo "## Auto Media ${GITHUB_REF_NAME}"
+            echo ""
+            echo "### Upgrade (low-spec / production)"
+            echo "1. \`git fetch --tags && git checkout tags/${GITHUB_REF_NAME}\`"
+            echo "2. Set in \`.env\`: \`AUTO_MEDIA_VERSION=${GITHUB_REF_NAME}\`"
+            echo "3. \`docker compose pull n8n gateway && docker compose up -d n8n gateway\`"
+            echo "4. \`bash scripts/post_docker_rebuild.sh\`"
+            echo ""
+            echo "GHCR images (public):"
+            echo "- \`ghcr.io/undefinedgod2718/auto-media-n8n:${GITHUB_REF_NAME}\`"
+            echo "- \`ghcr.io/undefinedgod2718/auto-media-gateway:${GITHUB_REF_NAME}\`"
+            echo ""
+            echo "See [docs/RELEASE.md](docs/RELEASE.md) for migration guards."
+            echo ""
+            if [[ -n "$prev" ]]; then
+              echo "### Changes since ${prev}"
+              echo '```'
+              git log --oneline "${prev}..HEAD" | head -80
+              echo '```'
+            fi
+          } > dist/release-notes.md
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          body_path: dist/release-notes.md
+          files: |
+            dist/auto-media-workflows.zip
+            workflows/auto-media-happy-path.json
+            workflows/auto-media-hitl-forwarder.json
+          generate_release_notes: true
