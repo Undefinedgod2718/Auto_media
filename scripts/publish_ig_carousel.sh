@@ -3,9 +3,12 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# shellcheck source=/dev/null
-[[ -f "$ROOT/.env" ]] && set -a && source "$ROOT/.env" && set +a
-source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
+SCRIPT_LIB="$(dirname "${BASH_SOURCE[0]}")/lib"
+# shellcheck source=lib/load_env.sh
+source "${SCRIPT_LIB}/load_env.sh"
+load_repo_env "$ROOT"
+source "${SCRIPT_LIB}/common.sh"
+source "${SCRIPT_LIB}/meta_token_util.sh"
 
 RUN_ID=""
 while [[ $# -gt 0 ]]; do
@@ -52,17 +55,30 @@ elif [[ "$GATE_EC" -ne 0 ]]; then
   json_err "publish target gate failed (ec=${GATE_EC})"
 fi
 
-if [[ -z "${IG_USER_ID:-}" || -z "${META_PAGE_ACCESS_TOKEN:-}" ]]; then
-  python3 - "$RUN_DIR" <<'PY'
+write_ig_skip() {
+  local reason="$1"
+  local err="${2:-}"
+  python3 - "$RUN_DIR" "$reason" "$err" <<'PY'
 import json, sys
 from pathlib import Path
-run_dir = Path(sys.argv[1])
-payload = {"ok": True, "skipped": True, "error": None}
+run_dir, reason, err = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+payload = {"ok": True, "skipped": True, "reason": reason}
+if err:
+    payload["error"] = err
 Path(run_dir, "publish_ig.json").write_text(json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8")
 print(json.dumps(payload, ensure_ascii=False))
 PY
-run_state_py "$RUN_DIR" "$RUN_ID" lock --name instagram_artist --artifact "instagram/publish_ig.json" --revision 1 >/dev/null || true
+  run_state_py "$RUN_DIR" "$RUN_ID" lock --name instagram_artist --artifact "instagram/publish_ig.json" --revision 1 >/dev/null || true
   exit 0
+}
+
+if [[ -z "${IG_USER_ID:-}" || -z "${META_PAGE_ACCESS_TOKEN:-}" ]]; then
+  write_ig_skip "missing_credentials" ""
+fi
+
+if ! is_page_access_token "${META_PAGE_ACCESS_TOKEN:-}"; then
+  write_ig_skip "wrong_token_type" \
+    "META_PAGE_ACCESS_TOKEN must be a Facebook Page token (EAA...). Threads token (THAA...) cannot publish IG."
 fi
 
 CATBOX_JSON="${RUN_DIR}/catbox_urls.json"
@@ -80,27 +96,19 @@ python3 "$ROOT/scripts/lib/ig_caption.py" "$POST_MD" >"$CAPTION_FILE" 2>/dev/nul
 OUT="$(python3 "$ROOT/scripts/lib/ig_publish.py" \
   --urls-json "$URLS_JSON" \
   --caption-file "$CAPTION_FILE" 2>&1)" || {
+  msg="$(printf '%s' "$OUT" | tail -1)"
+  if is_meta_token_skip_msg "$msg"; then
+    write_ig_skip "token_invalid" "$msg"
+  fi
   python3 - "$RUN_DIR" "$OUT" <<'PY'
 import json, sys
 from pathlib import Path
 run_dir, err = Path(sys.argv[1]), sys.argv[2]
-msg = str(err or "").strip()
-expired = ("session has expired" in msg.lower()) or ("error validating access token" in msg.lower()) or ("code 190" in msg.lower())
-if expired:
-    payload = {
-        "ok": True,
-        "skipped": True,
-        "reason": "token_expired",
-        "error": msg or "Meta access token expired",
-    }
-else:
-    payload = {"ok": False, "skipped": False, "error": msg}
+payload = {"ok": False, "skipped": False, "error": str(err or "").strip()}
 Path(run_dir, "publish_ig.json").write_text(json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8")
 print(json.dumps(payload, ensure_ascii=False))
-if not payload.get("ok"):
-    raise SystemExit(1)
+raise SystemExit(1)
 PY
-  exit 0
 }
 
 python3 - "$RUN_DIR" "$OUT" <<'PY'
@@ -113,10 +121,17 @@ if not payload["skipped"]:
     payload.update({k: result[k] for k in ("post_id", "mode", "slide_count") if k in result})
 if (not payload["ok"]) and isinstance(payload.get("error"), str):
     msg = payload["error"].lower()
-    if ("session has expired" in msg) or ("error validating access token" in msg) or ("code 190" in msg):
+    skip_terms = (
+        "session has expired",
+        "error validating access token",
+        "cannot parse access token",
+        "invalid oauth access token",
+        "code 190",
+    )
+    if any(t in msg for t in skip_terms):
         payload["ok"] = True
         payload["skipped"] = True
-        payload["reason"] = "token_expired"
+        payload["reason"] = "token_invalid"
 Path(run_dir, "publish_ig.json").write_text(json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8")
 print(json.dumps(payload, ensure_ascii=False))
 if not payload["ok"] and not payload["skipped"]:

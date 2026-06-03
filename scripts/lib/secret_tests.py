@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any
@@ -13,9 +14,30 @@ def _http_get_json(url: str, timeout: int = 12) -> tuple[bool, dict[str, Any], s
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8", errors="replace")
-            return True, json.loads(raw) if raw else {}, f"http={resp.status}"
+            data = json.loads(raw) if raw else {}
+            if isinstance(data, dict) and data.get("error"):
+                err = data["error"]
+                msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+                return False, data, msg
+            return True, data, f"http={resp.status}"
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode("utf-8", errors="replace")
+        try:
+            data = json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            data = {}
+        if isinstance(data, dict) and data.get("error"):
+            err = data["error"]
+            msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+            return False, data, msg
+        return False, data, f"http={e.code}: {raw[:200] or e.reason}"
     except Exception as e:  # noqa: BLE001
         return False, {}, str(e)
+
+
+def _token_expired_message(msg: str) -> bool:
+    m = msg.lower()
+    return "session has expired" in m or "error validating access token" in m or "code 190" in m
 
 
 def test_telegram(values: dict[str, str]) -> dict[str, Any]:
@@ -50,6 +72,8 @@ def test_n8n(values: dict[str, str]) -> dict[str, Any]:
     try:
         with urllib.request.urlopen(req, timeout=12) as resp:
             return {"name": "n8n_api", "ok": True, "message": f"workflows ok http={resp.status}"}
+    except urllib.error.HTTPError as e:
+        return {"name": "n8n_api", "ok": False, "message": f"workflows failed: http={e.code}"}
     except Exception as e:  # noqa: BLE001
         return {"name": "n8n_api", "ok": False, "message": f"workflows failed: {e}"}
 
@@ -57,7 +81,7 @@ def test_n8n(values: dict[str, str]) -> dict[str, Any]:
 def test_meta(values: dict[str, str]) -> dict[str, Any]:
     token = values.get("META_PAGE_ACCESS_TOKEN", "")
     page_id = values.get("META_PAGE_ID", "")
-    version = values.get("META_GRAPH_API_VERSION", "v21.0")
+    version = values.get("META_GRAPH_API_VERSION", "v21.0") or "v21.0"
     if not token or not page_id:
         return {"name": "meta_fb_ig", "ok": False, "message": "META_PAGE_ACCESS_TOKEN or META_PAGE_ID missing"}
     url = (
@@ -65,19 +89,19 @@ def test_meta(values: dict[str, str]) -> dict[str, Any]:
         f"&access_token={urllib.parse.quote(token, safe='')}"
     )
     ok, data, msg = _http_get_json(url)
-    if not ok or data.get("error"):
-        err = (data.get("error") or {}).get("message", msg)
-        return {"name": "meta_fb_ig", "ok": False, "message": f"page check failed: {err}"}
+    if not ok:
+        hint = " (token expired — refresh in Graph API Explorer)" if _token_expired_message(msg) else ""
+        return {"name": "meta_fb_ig", "ok": False, "message": f"page check failed: {msg}{hint}"}
     ig_user = values.get("IG_USER_ID", "")
     if ig_user:
         ig_url = (
             f"https://graph.facebook.com/{version}/{ig_user}?fields=id,username"
             f"&access_token={urllib.parse.quote(token, safe='')}"
         )
-        ok2, data2, msg2 = _http_get_json(ig_url)
-        if not ok2 or data2.get("error"):
-            err2 = (data2.get("error") or {}).get("message", msg2)
-            return {"name": "meta_fb_ig", "ok": False, "message": f"ig check failed: {err2}"}
+        ok2, _, msg2 = _http_get_json(ig_url)
+        if not ok2:
+            hint = " (token expired — refresh in Graph API Explorer)" if _token_expired_message(msg2) else ""
+            return {"name": "meta_fb_ig", "ok": False, "message": f"ig check failed: {msg2}{hint}"}
     return {"name": "meta_fb_ig", "ok": True, "message": "Meta page/IG check ok"}
 
 
@@ -90,23 +114,39 @@ def test_threads(values: dict[str, str]) -> dict[str, Any]:
         f"https://graph.threads.net/v1.0/{user_id}?fields=id,username"
         f"&access_token={urllib.parse.quote(token, safe='')}"
     )
-    ok, data, msg = _http_get_json(url)
-    if not ok or data.get("error"):
-        err = (data.get("error") or {}).get("message", msg)
-        return {"name": "threads", "ok": False, "message": f"threads check failed: {err}"}
+    ok, _, msg = _http_get_json(url)
+    if not ok:
+        hint = " (token expired — refresh in Graph API Explorer)" if _token_expired_message(msg) else ""
+        return {"name": "threads", "ok": False, "message": f"threads check failed: {msg}{hint}"}
     return {"name": "threads", "ok": True, "message": "Threads check ok"}
 
 
-def run_group(group: str, values: dict[str, str]) -> dict[str, Any]:
-    checks = []
-    if group in ("all", "telegram"):
-        checks.append(test_telegram(values))
-    if group in ("all", "n8n_api"):
-        checks.append(test_n8n(values))
-    if group in ("all", "meta_fb_ig"):
-        checks.append(test_meta(values))
-    if group in ("all", "threads"):
-        checks.append(test_threads(values))
-    ok = all(c.get("ok") for c in checks) if checks else False
-    return {"ok": ok, "checks": checks}
+def merge_values(base: dict[str, str], overrides: dict[str, str] | None) -> dict[str, str]:
+    merged = dict(base)
+    if not overrides:
+        return merged
+    for key, val in overrides.items():
+        if isinstance(val, str) and val.strip():
+            merged[key] = val.strip()
+    return merged
 
+
+def run_group(group: str, values: dict[str, str], overrides: dict[str, str] | None = None) -> dict[str, Any]:
+    effective = merge_values(values, overrides)
+    from_form = bool(overrides)
+    checks: list[dict[str, Any]] = []
+    if group in ("all", "telegram"):
+        checks.append(test_telegram(effective))
+    if group in ("all", "n8n_api"):
+        checks.append(test_n8n(effective))
+    if group in ("all", "meta_fb_ig", "meta"):
+        checks.append(test_meta(effective))
+    if group in ("all", "threads"):
+        checks.append(test_threads(effective))
+    ok = all(c.get("ok") for c in checks) if checks else False
+    out: dict[str, Any] = {"ok": ok, "checks": checks, "group": group}
+    if from_form:
+        out["note"] = "Tested form values (not yet saved). Click Save updates, then: docker compose up -d n8n"
+    else:
+        out["note"] = "Tested values from .env on disk. After Save, run: docker compose up -d n8n"
+    return out

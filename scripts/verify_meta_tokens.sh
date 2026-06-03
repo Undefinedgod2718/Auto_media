@@ -2,11 +2,21 @@
 # Verify Meta / Threads access tokens before publish (OAuth error 190 = expired).
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# shellcheck source=/dev/null
-[[ -f "$ROOT/.env" ]] && set -a && source "$ROOT/.env" && set +a
+# shellcheck source=scripts/lib/load_env.sh
+source "${ROOT}/scripts/lib/load_env.sh"
+load_repo_env "$ROOT"
+source "${ROOT}/scripts/lib/meta_token_util.sh"
 
 STRICT="${VERIFY_META_STRICT:-1}"
 errors=0
+ran=0
+
+if [[ -n "${META_PAGE_ACCESS_TOKEN:-}" ]] && ! is_page_access_token "${META_PAGE_ACCESS_TOKEN}"; then
+  echo "FAIL: META_PAGE_ACCESS_TOKEN looks like Threads token (THAA...). IG/FB need Page token (EAA...)." >&2
+  echo "  → Graph API Explorer: select your Facebook Page → Generate Access Token" >&2
+  echo "  → Save EAA... to META_PAGE_ACCESS_TOKEN at http://127.0.0.1:8790/settings" >&2
+  errors=$((errors + 1))
+fi
 
 check_token() {
   local label="$1"
@@ -60,6 +70,7 @@ else:
 }
 
 if [[ -n "${THREADS_ACCESS_TOKEN:-}" && -n "${THREADS_USER_ID:-}" ]]; then
+  ran=$((ran + 1))
   check_token "THREADS_ACCESS_TOKEN" "$THREADS_ACCESS_TOKEN" \
     "https://graph.threads.net/v1.0/${THREADS_USER_ID}?fields=id,username&access_token=${THREADS_ACCESS_TOKEN}" \
     || errors=$((errors + 1))
@@ -67,16 +78,20 @@ else
   echo "skip THREADS (THREADS_USER_ID or THREADS_ACCESS_TOKEN unset)" >&2
 fi
 
-if [[ -n "${META_PAGE_ACCESS_TOKEN:-}" && -n "${META_PAGE_ID:-}" ]]; then
+if [[ -n "${META_PAGE_ACCESS_TOKEN:-}" && -n "${META_PAGE_ID:-}" ]] && is_page_access_token "${META_PAGE_ACCESS_TOKEN}"; then
+  ran=$((ran + 1))
   ver="${META_GRAPH_API_VERSION:-v21.0}"
   check_token "META_PAGE_ACCESS_TOKEN" "$META_PAGE_ACCESS_TOKEN" \
     "https://graph.facebook.com/${ver}/${META_PAGE_ID}?fields=id,name&access_token=${META_PAGE_ACCESS_TOKEN}" \
     || errors=$((errors + 1))
+elif [[ -n "${META_PAGE_ACCESS_TOKEN:-}" || -n "${META_PAGE_ID:-}" ]]; then
+  echo "skip META_PAGE (wrong token type or missing PAGE_ID)" >&2
 else
   echo "skip META_PAGE (META_PAGE_ID or META_PAGE_ACCESS_TOKEN unset)" >&2
 fi
 
-if [[ -n "${IG_USER_ID:-}" && -n "${META_PAGE_ACCESS_TOKEN:-}" ]]; then
+if [[ -n "${IG_USER_ID:-}" && -n "${META_PAGE_ACCESS_TOKEN:-}" ]] && is_page_access_token "${META_PAGE_ACCESS_TOKEN}"; then
+  ran=$((ran + 1))
   ver="${META_GRAPH_API_VERSION:-v21.0}"
   check_token "IG_USER_ID" "$META_PAGE_ACCESS_TOKEN" \
     "https://graph.facebook.com/${ver}/${IG_USER_ID}?fields=id,username&access_token=${META_PAGE_ACCESS_TOKEN}" \
@@ -99,6 +114,12 @@ if command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' 2>/dev/n
     echo "WARN: .env THREADS_ACCESS_TOKEN differs from auto_media-n8n-1 — run: docker compose up -d n8n" >&2
     errors=$((errors + 1))
   fi
+fi
+
+if [[ "$ran" -eq 0 ]]; then
+  echo "FAIL: no token checks ran — set THREADS_* and/or META_PAGE_* / IG_USER_ID in .env (use :8790/settings)" >&2
+  python3 -c 'import json; print(json.dumps({"ok":False,"error":"all meta checks skipped","hint":"save tokens via http://127.0.0.1:8790/settings"}))'
+  exit 1
 fi
 
 if [[ "$errors" -gt 0 ]]; then

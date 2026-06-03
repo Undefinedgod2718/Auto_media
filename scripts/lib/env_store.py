@@ -35,7 +35,16 @@ FIELD_SPECS: tuple[EnvField, ...] = (
     EnvField("ANTHROPIC_API_KEY", "llm", True, True, "Anthropic API key"),
     EnvField("CLAUDE_CODE_OAUTH_TOKEN", "llm", True, True, "Claude OAuth token"),
     EnvField("GEMINI_API_KEY", "llm", True, True, "Gemini API key"),
+    EnvField(
+        "AUTO_MEDIA_DASHBOARD_WRITE_PIN",
+        "dashboard",
+        True,
+        True,
+        "Skill Manager write PIN (min 8 chars)",
+    ),
 )
+
+WRITE_PIN_MIN_LEN = 8
 
 FIELD_MAP = {f.name: f for f in FIELD_SPECS}
 ALLOWED_FIELDS = frozenset(FIELD_MAP.keys())
@@ -55,7 +64,7 @@ def parse_env(path: Path) -> tuple[list[str], dict[str, str]]:
         m = ASSIGN_RE.match(line)
         if not m:
             continue
-        values[m.group(1)] = m.group(2)
+        values[m.group(1)] = _strip_env_value(m.group(2))
     return lines, values
 
 
@@ -113,6 +122,10 @@ def _validated_updates(updates: dict[str, str]) -> dict[str, str]:
         v = val.strip()
         if not v:
             continue
+        if key == "AUTO_MEDIA_DASHBOARD_WRITE_PIN" and len(v) < WRITE_PIN_MIN_LEN:
+            raise ValueError(
+                f"AUTO_MEDIA_DASHBOARD_WRITE_PIN must be at least {WRITE_PIN_MIN_LEN} characters"
+            )
         clean[key] = v
     return clean
 
@@ -126,6 +139,22 @@ def _line_index(lines: Iterable[str]) -> dict[str, int]:
     return idx
 
 
+def _format_env_line(key: str, val: str) -> str:
+    if not val:
+        return f"{key}="
+    if re.search(r'[\s#"\'$`!]', val) or val.startswith("="):
+        escaped = val.replace("\\", "\\\\").replace('"', '\\"')
+        return f'{key}="{escaped}"'
+    return f"{key}={val}"
+
+
+def _strip_env_value(raw: str) -> str:
+    v = raw.strip()
+    if len(v) >= 2 and v[0] == v[-1] == '"':
+        return v[1:-1].replace('\\"', '"').replace("\\\\", "\\")
+    return v
+
+
 def update_env(path: Path, updates: dict[str, str]) -> list[str]:
     clean = _validated_updates(updates)
     if not clean:
@@ -134,7 +163,7 @@ def update_env(path: Path, updates: dict[str, str]) -> list[str]:
     idx = _line_index(lines)
     changed: list[str] = []
     for key, val in clean.items():
-        line = f"{key}={val}"
+        line = _format_env_line(key, val)
         if key in idx:
             lines[idx[key]] = line
         else:

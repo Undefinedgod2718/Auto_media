@@ -10,6 +10,8 @@ services:
     user: "0:0"
     entrypoint: ["/entrypoint.sh"]
     command: ["n8n", "start"]
+    env_file:
+      - .env
     ports:
       - "${N8N_PORT:-5678}:5678"
     environment:
@@ -108,33 +110,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 15s
-
-  dashboard:
-    build:
-      context: .
-      dockerfile: docker/gateway/Dockerfile
-    image: auto-media-gateway:local
-    restart: unless-stopped
-    user: "0:0"
-    entrypoint: ["/entrypoint.sh"]
-    command: ["python3", "/app/scripts/am_dashboard.py"]
-    ports:
-      - "127.0.0.1:${DASHBOARD_PORT:-8788}:8788"
-    environment:
-      AUTO_MEDIA_ROOT: /app
-      DATA_ROOT: /data
-      AUTO_MEDIA_DASHBOARD_HOST: 0.0.0.0
-      AUTO_MEDIA_DASHBOARD_PORT: "8788"
-      LANG: C.UTF-8
-      LC_ALL: C.UTF-8
-    volumes:
-      - ./data/runs:/data/runs
-      - ./data/logs:/data/logs
-      - ./data/hitl:/data/hitl
-    depends_on:
-      n8n:
-        condition: service_healthy
-    profiles: ["dashboard"]
 
 volumes:
   n8n_data:

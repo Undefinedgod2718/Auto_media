@@ -12,6 +12,7 @@ import secrets
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 import urllib.parse
 from contextlib import contextmanager
@@ -19,12 +20,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import fcntl
-import yaml
 
 ROOT = Path(os.environ.get("AUTO_MEDIA_ROOT", Path(__file__).resolve().parents[1]))
 DATA = Path(os.environ.get("DATA_ROOT", ROOT / "data"))
 HOST = os.environ.get("AUTO_MEDIA_DASHBOARD_HOST", "127.0.0.1")
-PORT = int(os.environ.get("AUTO_MEDIA_DASHBOARD_PORT", "8788"))
+PORT = int(os.environ.get("AUTO_MEDIA_DASHBOARD_PORT", "8790"))
 ENV_PATH = ROOT / ".env"
 PLATFORM_YAML = ROOT / "config" / "platform.yaml"
 SKILLS_DIR = ROOT / "config" / "skills"
@@ -49,6 +49,18 @@ LEGACY_ARTIST_FILES = (
     "RULES.md",
 )
 CSRF_TOKEN = secrets.token_urlsafe(24)
+INSTANCE_REV = "settings-ssr-20260603"
+WRITE_PIN_ENV = "AUTO_MEDIA_DASHBOARD_WRITE_PIN"
+WRITE_SESSION_COOKIE = "am_write_session"
+WRITE_SESSION_TTL_S = 8 * 3600
+WRITE_PIN_MIN_LEN = 8
+UNLOCK_MAX_ATTEMPTS = 5
+UNLOCK_WINDOW_S = 60
+
+_WRITE_SESSIONS: dict[str, float] = {}
+_WRITE_SESSION_LOCK = threading.Lock()
+_UNLOCK_FAILS: dict[str, list[float]] = {}
+_UNLOCK_FAIL_LOCK = threading.Lock()
 
 import sys
 
@@ -86,8 +98,76 @@ def _extract_line(text: str, key: str) -> str:
     return ""
 
 
-def _write_enabled() -> bool:
+def _dev_write_bypass() -> bool:
     return os.environ.get("AUTO_MEDIA_DASHBOARD_WRITE", "0") == "1"
+
+
+def _configured_write_pin() -> str | None:
+    pin = (_load_env_values().get(WRITE_PIN_ENV) or "").strip()
+    return pin if len(pin) >= WRITE_PIN_MIN_LEN else None
+
+
+def _purge_write_sessions(now: float | None = None) -> None:
+    ts = now if now is not None else time.time()
+    expired = [sid for sid, exp in _WRITE_SESSIONS.items() if exp <= ts]
+    for sid in expired:
+        _WRITE_SESSIONS.pop(sid, None)
+
+
+def _write_session_valid(session_id: str) -> bool:
+    if not session_id:
+        return False
+    now = time.time()
+    with _WRITE_SESSION_LOCK:
+        _purge_write_sessions(now)
+        exp = _WRITE_SESSIONS.get(session_id)
+        return exp is not None and exp > now
+
+
+def _create_write_session() -> str:
+    sid = secrets.token_urlsafe(32)
+    with _WRITE_SESSION_LOCK:
+        _purge_write_sessions()
+        _WRITE_SESSIONS[sid] = time.time() + WRITE_SESSION_TTL_S
+    return sid
+
+
+def _revoke_write_session(session_id: str) -> None:
+    with _WRITE_SESSION_LOCK:
+        _WRITE_SESSIONS.pop(session_id, None)
+
+
+def _unlock_rate_ok(client_ip: str) -> bool:
+    now = time.time()
+    with _UNLOCK_FAIL_LOCK:
+        attempts = [t for t in _UNLOCK_FAILS.get(client_ip, []) if now - t < UNLOCK_WINDOW_S]
+        _UNLOCK_FAILS[client_ip] = attempts
+        return len(attempts) < UNLOCK_MAX_ATTEMPTS
+
+
+def _record_unlock_fail(client_ip: str) -> None:
+    now = time.time()
+    with _UNLOCK_FAIL_LOCK:
+        attempts = [t for t in _UNLOCK_FAILS.get(client_ip, []) if now - t < UNLOCK_WINDOW_S]
+        attempts.append(now)
+        _UNLOCK_FAILS[client_ip] = attempts
+
+
+def _write_enabled_for(handler: BaseHTTPRequestHandler) -> bool:
+    if _dev_write_bypass():
+        return True
+    cookies = _parse_cookies(handler.headers.get("Cookie", ""))
+    return _write_session_valid(cookies.get(WRITE_SESSION_COOKIE, ""))
+
+
+def _parse_cookies(raw: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for part in raw.split(";"):
+        part = part.strip()
+        if "=" in part:
+            k, v = part.split("=", 1)
+            out[k.strip()] = v.strip()
+    return out
 
 
 def _skill_dirs() -> list[Path]:
@@ -159,10 +239,20 @@ def _safe_skill_file_path(skill_name: str, filename: str) -> Path:
     return p
 
 
+def _yaml():
+    try:
+        import yaml as _yaml_mod  # type: ignore[import-untyped]
+    except ImportError as e:
+        raise RuntimeError(
+            "PyYAML not installed. Run: uv pip install pyyaml  (or: pip install pyyaml)"
+        ) from e
+    return _yaml_mod
+
+
 def _load_platform_config() -> dict:
     if not PLATFORM_YAML.is_file():
         raise ValueError("config/platform.yaml missing")
-    data = yaml.safe_load(PLATFORM_YAML.read_text(encoding="utf-8")) or {}
+    data = _yaml().safe_load(PLATFORM_YAML.read_text(encoding="utf-8")) or {}
     if not isinstance(data, dict):
         raise ValueError("config/platform.yaml must be a mapping")
     return data
@@ -211,11 +301,11 @@ def _replace_platform_mapping(data: dict, mapping: dict[str, dict[str, str]]) ->
 
 
 def _save_platform_config_atomic(data: dict) -> None:
-    text = yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
+    text = _yaml().safe_dump(data, allow_unicode=True, sort_keys=False)
     _write_text_atomic(PLATFORM_YAML, text)
 
 
-def _skills_schema() -> dict[str, object]:
+def _skills_schema_payload(handler: BaseHTTPRequestHandler) -> dict[str, object]:
     skills = []
     writer_options: list[str] = []
     artist_options: list[str] = []
@@ -228,7 +318,8 @@ def _skills_schema() -> dict[str, object]:
         if "artist" in types:
             artist_options.append(d.name)
     return {
-        "write_enabled": _write_enabled(),
+        "write_enabled": _write_enabled_for(handler),
+        "pin_configured": _configured_write_pin() is not None,
         "mapping": _current_platform_mapping(),
         "options": {"writer": writer_options, "artist": artist_options},
         "skills": skills,
@@ -304,9 +395,10 @@ def _n8n_cli_check() -> tuple[dict[str, str], list[str]]:
     checks["codex"] = "PASS n8n codex binary baked (INSTALL_CODEX=true)"
     checks["gemini"] = "PASS n8n gemini binary baked (npm global)"
 
-    codex_auth = Path("/data/secrets/codex/auth.json").is_file()
-    gemini_auth = Path("/data/secrets/gemini/oauth_creds.json").is_file() or Path(
-        "/data/secrets/gemini/google_accounts.json"
+    secrets_root = DATA / "secrets"
+    codex_auth = (secrets_root / "codex" / "auth.json").is_file()
+    gemini_auth = (secrets_root / "gemini" / "oauth_creds.json").is_file() or (
+        secrets_root / "gemini" / "google_accounts.json"
     ).is_file()
     if codex_auth:
         checks["codex"] += " + oauth"
@@ -353,6 +445,74 @@ def redact_secrets(text: str) -> str:
     for pat in patterns:
         redacted = re.sub(pat, r"\1[REDACTED]", redacted, flags=re.IGNORECASE)
     return redacted
+
+
+def _docker_compose_prefix() -> list[str]:
+    candidates: list[list[str]] = [
+        ["docker", "compose"],
+        ["sudo", "-n", "docker", "compose"],
+        ["sudo", "docker", "compose"],
+    ]
+    for prefix in candidates:
+        try:
+            p = subprocess.run(
+                [*prefix, "ps"],
+                cwd=str(ROOT),
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            if p.returncode == 0:
+                return prefix
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+    return ["docker", "compose"]
+
+
+def _parse_verify_meta_output(text: str) -> dict[str, object]:
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    parsed: dict[str, object] = {"ok": False, "lines": [], "summary": ""}
+    for line in reversed(lines):
+        if line.startswith("{") and '"ok"' in line:
+            try:
+                body = json.loads(line)
+                if isinstance(body, dict):
+                    parsed["ok"] = bool(body.get("ok"))
+                    parsed["summary"] = str(body.get("error") or body.get("path") or "")
+                    break
+            except json.JSONDecodeError:
+                pass
+    check_lines = [ln for ln in lines if ln.startswith(("ok ", "FAIL:", "skip ", "WARN:"))]
+    parsed["lines"] = check_lines
+    if not parsed.get("summary") and check_lines:
+        parsed["summary"] = check_lines[0]
+    if not check_lines and lines:
+        parsed["ok"] = False
+    elif check_lines and not any(ln.startswith("FAIL:") for ln in check_lines):
+        if not any("looks like Threads token" in ln for ln in check_lines):
+            parsed["ok"] = parsed.get("ok") or any(ln.startswith("ok ") for ln in check_lines)
+    return parsed
+
+
+def _apply_after_settings_save() -> dict[str, object]:
+    """Restart n8n so container env matches .env, then verify Meta/Threads tokens."""
+    dc = _docker_compose_prefix()
+    rc_n, n8n_out = run_safe([*dc, "up", "-d", "n8n"], timeout_s=120)
+    n8n_block: dict[str, object] = {
+        "ok": rc_n == 0,
+        "exit_code": rc_n,
+        "cmd": " ".join([*dc, "up", "-d", "n8n"]),
+        "output": n8n_out,
+    }
+    rc_v, verify_out = run_safe(["bash", "scripts/verify_meta_tokens.sh"], timeout_s=90)
+    verify_block = _parse_verify_meta_output(verify_out)
+    verify_block["exit_code"] = rc_v
+    verify_block["output"] = verify_out
+    return {
+        "ok": bool(n8n_block["ok"]) and bool(verify_block.get("ok")),
+        "n8n_restart": n8n_block,
+        "verify_meta": verify_block,
+    }
 
 
 def list_runs(limit: int = 15) -> list[dict]:
@@ -426,36 +586,112 @@ def _user_html() -> str:
 
 def _skills_html() -> str:
     return f"""<!doctype html>
-<html><head><meta charset="utf-8"><title>Skill Manager</title></head>
+<html><head><meta charset="utf-8"><title>Skill Manager</title>
+<style>
+  body {{ font-family: system-ui, sans-serif; margin: 16px; max-width: 1100px; }}
+  .toolbar {{ display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-height: 40px; margin-bottom: 12px; }}
+  .badge {{ padding: 4px 10px; border-radius: 4px; font-weight: 600; font-size: 13px; }}
+  .badge-ro {{ background: #eee; color: #333; }}
+  .badge-wr {{ background: #d1fae5; color: #065f46; }}
+  .unlock-row {{ display: flex; align-items: center; gap: 6px; }}
+  .btn {{ padding: 6px 12px; cursor: pointer; }}
+  .btn-primary {{ background: #2563eb; color: #fff; border: none; font-weight: 600; }}
+  .btn:disabled {{ opacity: 0.45; cursor: not-allowed; }}
+  table.mapping {{ border-collapse: collapse; width: 100%; margin: 8px 0; }}
+  table.mapping th, table.mapping td {{ border: 1px solid #ccc; padding: 6px 8px; text-align: left; }}
+  .editor-row {{ display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }}
+  #editor {{ width: 100%; height: 320px; box-sizing: border-box; }}
+  #result {{ margin: 8px 0; padding: 8px; background: #f4f4f5; border-radius: 4px; font-size: 13px; }}
+  #resultDetail {{ display: none; white-space: pre-wrap; font-size: 12px; max-height: 200px; overflow: auto; }}
+  h3 {{ margin: 16px 0 6px; font-size: 15px; }}
+</style></head>
 <body>
-  <h2>Skill Manager</h2>
-  <p><a href="/user">Back to user console</a></p>
-  <p id="mode"></p>
-  <h3>Platform mapping (6 slots)</h3>
-  <div id="mapping"></div>
-  <button type="button" onclick="saveMapping()">Save mapping (auto apply)</button>
-  <h3>Skill file editor</h3>
-  <div>
-    <label>Skill: <select id="skillSel"></select></label>
-    <label>File: <select id="fileSel"></select></label>
-    <button type="button" onclick="loadFile()">Load</button>
+  <div class="toolbar">
+    <a href="/user">返回</a>
+    <span id="modeBadge" class="badge badge-ro">唯讀</span>
+    <span id="unlockWrap" class="unlock-row">
+      <input type="password" id="pinIn" placeholder="寫入 PIN" size="14"
+        title="與 Settings 中「Skill 寫入 PIN」相同；僅本機有效" />
+      <button type="button" class="btn btn-primary" id="btnUnlock" onclick="unlockWrite()"
+        title="驗證 PIN 後 8 小時內可編輯；按鎖定或關閉分頁後需再解鎖">解鎖</button>
+      <a id="pinSetupLink" href="/settings" style="display:none">先到 Settings 設定 PIN</a>
+    </span>
+    <button type="button" class="btn" id="btnLock" onclick="lockWrite()" style="display:none"
+      title="立即回到唯讀，需再輸入 PIN">鎖定</button>
   </div>
-  <textarea id="editor" style="width:90%;height:360px;"></textarea><br/>
-  <button type="button" onclick="saveFile()">Save file (auto apply)</button>
-  <pre id="result"></pre>
+  <h3>平台對應</h3>
+  <table class="mapping"><thead><tr><th>平台</th><th>角色</th><th>Skill</th></tr></thead>
+  <tbody id="mappingBody"></tbody></table>
+  <button type="button" class="btn btn-primary" id="btnSaveMapping" onclick="saveMapping()" disabled
+    title="寫入 platform.yaml 並自動 apply 到 n8n">儲存對應</button>
+  <h3>檔案編輯</h3>
+  <div class="editor-row">
+    <label>Skill <select id="skillSel"></select></label>
+    <label>檔案 <select id="fileSel"></select></label>
+    <button type="button" class="btn" id="btnLoad" onclick="loadFile()"
+      title="從 config/skills 讀取檔案">載入</button>
+    <button type="button" class="btn btn-primary" id="btnSaveFile" onclick="saveFile()" disabled
+      title="儲存前會驗證 skill 並 apply 到 n8n">儲存檔案</button>
+  </div>
+  <textarea id="editor" readonly></textarea>
+  <div id="result">就緒</div>
+  <button type="button" class="btn" id="btnDetail" onclick="toggleDetail()" style="display:none">詳細</button>
+  <pre id="resultDetail"></pre>
 <script>
 const csrf = "{CSRF_TOKEN}";
 let schema = null;
-function escapeHtml(s) {{
-  return String(s).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
+let lastDetail = '';
+function setResult(msg, detail) {{
+  document.getElementById('result').textContent = msg;
+  lastDetail = detail || '';
+  const btn = document.getElementById('btnDetail');
+  const pre = document.getElementById('resultDetail');
+  if (lastDetail) {{
+    btn.style.display = 'inline-block';
+    pre.textContent = lastDetail;
+  }} else {{
+    btn.style.display = 'none';
+    pre.style.display = 'none';
+    pre.textContent = '';
+  }}
+}}
+function toggleDetail() {{
+  const pre = document.getElementById('resultDetail');
+  pre.style.display = pre.style.display === 'none' ? 'block' : 'none';
+}}
+function applyWriteMode(enabled, pinConfigured) {{
+  const ro = !enabled;
+  document.getElementById('editor').readOnly = ro;
+  document.getElementById('btnSaveFile').disabled = ro;
+  document.getElementById('btnSaveMapping').disabled = ro;
+  document.querySelectorAll('#mappingBody select').forEach(el => {{ el.disabled = ro; }});
+  const badge = document.getElementById('modeBadge');
+  const unlockWrap = document.getElementById('unlockWrap');
+  const btnLock = document.getElementById('btnLock');
+  const pinIn = document.getElementById('pinIn');
+  const btnUnlock = document.getElementById('btnUnlock');
+  const pinLink = document.getElementById('pinSetupLink');
+  if (enabled) {{
+    badge.textContent = '可寫入';
+    badge.className = 'badge badge-wr';
+    unlockWrap.style.display = 'none';
+    btnLock.style.display = 'inline-block';
+  }} else {{
+    badge.textContent = '唯讀';
+    badge.className = 'badge badge-ro';
+    unlockWrap.style.display = 'flex';
+    btnLock.style.display = 'none';
+    const needSetup = !pinConfigured;
+    pinIn.disabled = needSetup;
+    btnUnlock.disabled = needSetup;
+    pinLink.style.display = needSetup ? 'inline' : 'none';
+  }}
 }}
 async function refreshSchema() {{
   const resp = await fetch('/api/skills/schema');
   const data = await resp.json();
   schema = data;
-  document.getElementById('mode').textContent = data.write_enabled
-    ? 'Write mode: ENABLED'
-    : 'Read-only mode: set AUTO_MEDIA_DASHBOARD_WRITE=1 to enable edits';
+  applyWriteMode(!!data.write_enabled, !!data.pin_configured);
   const skillSel = document.getElementById('skillSel');
   skillSel.innerHTML = '';
   for (const s of data.skills || []) {{
@@ -466,8 +702,6 @@ async function refreshSchema() {{
   }}
   await refreshFiles();
   renderMapping();
-  const ro = !data.write_enabled;
-  document.getElementById('editor').readOnly = ro;
 }}
 async function refreshFiles() {{
   const skill = document.getElementById('skillSel').value;
@@ -490,12 +724,43 @@ function renderMapping() {{
     ['instagram','writer'], ['threads','writer'], ['facebook','writer'],
     ['instagram','artist'], ['threads','artist'], ['facebook','artist']
   ];
-  const htmlRows = slots.map(([p,a]) => {{
+  const tbody = document.getElementById('mappingBody');
+  tbody.innerHTML = '';
+  const ro = !(schema && schema.write_enabled);
+  for (const [p, a] of slots) {{
     const cur = (m[p]||{{}})[a] || '';
-    const list = (opts[a]||[]).map(v => `<option ${{v===cur?'selected':''}} value="${{v}}">${{v}}</option>`).join('');
-    return `<div><b>${{p}}/${{a}}</b> <select id="slot-${{p}}-${{a}}">${{list}}</select></div>`;
-  }}).join('');
-  document.getElementById('mapping').innerHTML = htmlRows;
+    const list = (opts[a]||[]).map(v =>
+      `<option ${{v===cur?'selected':''}} value="${{v}}">${{v}}</option>`).join('');
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${{p}}</td><td>${{a}}</td><td><select id="slot-${{p}}-${{a}}" ` +
+      `title="該平台發文時使用的 skill 目錄名稱" ${{ro?'disabled':''}}>${{list}}</select></td>`;
+    tbody.appendChild(tr);
+  }}
+}}
+async function unlockWrite() {{
+  const pin = document.getElementById('pinIn').value;
+  const resp = await fetch('/api/skills/unlock', {{
+    method: 'POST',
+    headers: {{'Content-Type':'application/json','X-CSRF-Token':csrf}},
+    body: JSON.stringify({{pin}})
+  }});
+  const data = await resp.json();
+  if (!resp.ok) {{
+    setResult(data.error || '解鎖失敗', data.hint || JSON.stringify(data));
+    return;
+  }}
+  document.getElementById('pinIn').value = '';
+  setResult('已解鎖，可編輯');
+  await refreshSchema();
+}}
+async function lockWrite() {{
+  await fetch('/api/skills/lock', {{
+    method: 'POST',
+    headers: {{'Content-Type':'application/json','X-CSRF-Token':csrf}},
+    body: '{{}}'
+  }});
+  setResult('已鎖定，唯讀');
+  await refreshSchema();
 }}
 async function loadFile() {{
   const skill = document.getElementById('skillSel').value;
@@ -503,7 +768,7 @@ async function loadFile() {{
   const resp = await fetch('/api/skills/file?skill=' + encodeURIComponent(skill) + '&file=' + encodeURIComponent(file));
   const data = await resp.json();
   document.getElementById('editor').value = data.content || '';
-  document.getElementById('result').textContent = JSON.stringify(data, null, 2);
+  setResult('已載入 ' + skill + '/' + file);
 }}
 async function saveFile() {{
   const payload = {{
@@ -511,13 +776,14 @@ async function saveFile() {{
     file: document.getElementById('fileSel').value,
     content: document.getElementById('editor').value
   }};
+  setResult('儲存中…');
   const resp = await fetch('/api/skills/file', {{
     method:'POST',
     headers:{{'Content-Type':'application/json','X-CSRF-Token':csrf}},
     body: JSON.stringify(payload)
   }});
   const data = await resp.json();
-  document.getElementById('result').textContent = JSON.stringify(data, null, 2);
+  setResult(resp.ok ? '檔案已儲存' : (data.error || '儲存失敗'), JSON.stringify(data, null, 2));
   await refreshSchema();
 }}
 async function saveMapping() {{
@@ -525,17 +791,18 @@ async function saveMapping() {{
   for (const p of ['instagram','threads','facebook']) {{
     mapping[p] = {{}};
     for (const a of ['writer','artist']) {{
-      const el = document.getElementById(`slot-${{p}}-${{a}}`);
+      const el = document.getElementById('slot-' + p + '-' + a);
       mapping[p][a] = el ? el.value : '';
     }}
   }}
+  setResult('儲存對應中…');
   const resp = await fetch('/api/skills/mapping', {{
     method:'POST',
     headers:{{'Content-Type':'application/json','X-CSRF-Token':csrf}},
     body: JSON.stringify({{mapping}})
   }});
   const data = await resp.json();
-  document.getElementById('result').textContent = JSON.stringify(data, null, 2);
+  setResult(resp.ok ? '對應已儲存' : (data.error || '儲存失敗'), JSON.stringify(data, null, 2));
   await refreshSchema();
 }}
 document.getElementById('skillSel').addEventListener('change', refreshFiles);
@@ -544,88 +811,265 @@ refreshSchema();
 </body></html>"""
 
 
+def _js_embed(obj: object) -> str:
+    return json.dumps(obj, ensure_ascii=False).replace("<", "\\u003c")
+
+
 def _settings_html() -> str:
+    values = _load_env_values()
+    env_path = str(ENV_PATH.resolve())
+    initial_schema = _js_embed(schema_payload())
+    initial_status = _js_embed(status_payload(values))
+    page_rev = INSTANCE_REV
     return f"""<!doctype html>
-<html><head><meta charset="utf-8"><title>Token Settings</title></head>
+<html><head><meta charset="utf-8"><title>Token Settings</title>
+<style>
+  body {{ font-family: system-ui, sans-serif; margin: 16px; }}
+  #status {{ font-weight: 600; margin: 8px 0; color: #0a5; }}
+  #result {{
+    background: #1a1a2e; color: #eee; padding: 12px; min-height: 80px;
+    border: 2px solid #4a9; white-space: pre-wrap; margin: 12px 0;
+  }}
+  .actions {{ margin: 12px 0; }}
+  .actions button {{ margin: 4px 6px 4px 0; padding: 8px 12px; }}
+  #btnSave {{ background: #2563eb; color: #fff; border: none; font-weight: 700; }}
+  .secret-input {{ min-width: 420px; border: 2px solid #2563eb; padding: 6px; }}
+  .field-status {{ color: #333; }}
+  .field-status.is-set {{ color: #0a5; font-weight: 600; }}
+</style></head>
 <body>
   <h2>Token Settings (localhost)</h2>
-  <p>Values are never returned in plaintext. Empty input means no update.</p>
-  <p><a href="/user">Back to user console</a></p>
-  <div id="status"></div>
+  <p id="envPath">.env: {html.escape(env_path)} · :{PORT}</p>
+  <p><a href="/user">Back to user console</a> | <a href="/settings">Reload page</a></p>
+  <div id="status">Loading...</div>
+  <pre id="result">(result appears here)</pre>
+  <div class="actions">
+    <button type="button" id="btnSave">Save updates</button>
+    <button type="button" id="btnTestAll">Test all</button>
+    <button type="button" id="btnTestTelegram">Test telegram</button>
+    <button type="button" id="btnTestN8n">Test n8n</button>
+    <button type="button" id="btnTestMeta">Test Meta+IG</button>
+    <button type="button" id="btnTestThreads">Test threads</button>
+    <button type="button" id="btnCheckCli">Check CLI auth</button>
+    <button type="button" id="btnCheckMeta">Check Meta/IG/Threads</button>
+  </div>
   <form id="settingsForm"></form>
-  <p>
-    <button type="button" onclick="saveSettings()">Save updates</button>
-    <button type="button" onclick="runTest('all')">Test all</button>
-    <button type="button" onclick="runTest('telegram')">Test telegram</button>
-    <button type="button" onclick="runTest('n8n_api')">Test n8n</button>
-    <button type="button" onclick="runTest('meta_fb_ig')">Test meta</button>
-    <button type="button" onclick="runTest('threads')">Test threads</button>
-    <button type="button" onclick="runReadonlyCheck('cli-auth')">Check CLI auth</button>
-    <button type="button" onclick="runReadonlyCheck('meta')">Check Meta/IG/Threads</button>
-  </p>
-  <pre id="result"></pre>
 <script>
-const csrf = "{CSRF_TOKEN}";
-let schema = [];
-let statusRows = [];
+var csrfToken = "{CSRF_TOKEN}";
+var schema = {initial_schema};
+var statusRows = {initial_status};
+var dashboardPort = "{PORT}";
+
+function setEnvPathLine(path) {{
+  var el = document.getElementById('envPath');
+  if (el && path) el.textContent = '.env: ' + path + ' · :' + dashboardPort;
+}}
+
+function showResult(text, statusText) {{
+  var el = document.getElementById('result');
+  var st = document.getElementById('status');
+  if (el) {{ el.textContent = text; el.scrollIntoView({{behavior:'smooth', block:'nearest'}}); }}
+  if (st && statusText) st.textContent = statusText;
+}}
 
 function fieldStatus(name) {{
-  return statusRows.find(r => r.name === name) || {{is_set:false, masked:""}};
+  for (var i = 0; i < statusRows.length; i++) {{
+    if (statusRows[i].name === name) return statusRows[i];
+  }}
+  return {{is_set: false, masked: ''}};
+}}
+
+function statusLabel(s) {{
+  var cur = s.is_set ? 'set' : 'unset';
+  return (s.description || s.name) + ' | current: ' + cur + ' ' + (s.masked || '');
+}}
+
+function collectFormUpdates() {{
+  var updates = {{}};
+  var inputs = document.querySelectorAll('#settingsForm input[name]');
+  for (var i = 0; i < inputs.length; i++) {{
+    var v = (inputs[i].value || '').trim();
+    if (v) updates[inputs[i].name] = v;
+  }}
+  return updates;
+}}
+
+async function refreshStatusLabelsOnly() {{
+  var statusResp = await fetch('/api/settings/status');
+  var statusJson = await statusResp.json();
+  statusRows = statusJson.fields || [];
+  if (statusJson.env_path) setEnvPathLine(statusJson.env_path);
+  var nodes = document.querySelectorAll('small.field-status');
+  for (var i = 0; i < nodes.length; i++) {{
+    var name = nodes[i].getAttribute('data-field');
+    var s = fieldStatus(name);
+    nodes[i].textContent = statusLabel(s);
+    nodes[i].className = 'field-status' + (s.is_set ? ' is-set' : '');
+  }}
+}}
+
+async function refreshCsrf() {{
+  try {{
+    var r = await fetch('/api/csrf');
+    var d = await r.json();
+    if (d && d.csrf) csrfToken = d.csrf;
+  }} catch (e) {{}}
+}}
+
+function renderSettingsForm() {{
+  var form = document.getElementById('settingsForm');
+  if (!form) return;
+  var preserved = collectFormUpdates();
+  form.innerHTML = '';
+  for (var j = 0; j < schema.length; j++) {{
+    var f = schema[j];
+    var s = fieldStatus(f.name);
+    var row = document.createElement('div');
+    row.style.marginBottom = '12px';
+    var inpType = f.secret ? 'password' : 'text';
+    var inpClass = f.secret ? 'secret-input' : '';
+    var stClass = 'field-status' + (s.is_set ? ' is-set' : '');
+    var pinTitle = (f.name === 'AUTO_MEDIA_DASHBOARD_WRITE_PIN')
+      ? ' title="至少 8 字元；供 Skill Manager 解鎖，勿與 Telegram token 混用"'
+      : '';
+    var pinLabelTitle = (f.name === 'AUTO_MEDIA_DASHBOARD_WRITE_PIN')
+      ? ' title="在 /skills 輸入相同 PIN 可解鎖編輯"'
+      : '';
+    row.innerHTML =
+      '<label' + pinLabelTitle + '><b>' + f.name + '</b> (' + f.group + ')</label><br/>' +
+      '<small class="' + stClass + '" data-field="' + f.name + '">' + statusLabel(s) + '</small><br/>' +
+      '<input type="' + inpType + '" class="' + inpClass + '" name="' + f.name + '" data-field="' + f.name + '" ' +
+      pinTitle + ' placeholder="Paste new value here" autocomplete="new-password" />';
+    form.appendChild(row);
+    if (preserved[f.name]) {{
+      row.querySelector('input').value = preserved[f.name];
+    }}
+  }}
 }}
 
 async function loadSettings() {{
-  const schemaResp = await fetch('/api/settings/schema');
-  const statusResp = await fetch('/api/settings/status');
-  schema = (await schemaResp.json()).fields || [];
-  statusRows = (await statusResp.json()).fields || [];
-  const form = document.getElementById('settingsForm');
-  form.innerHTML = '';
-  for (const f of schema) {{
-    const s = fieldStatus(f.name);
-    const row = document.createElement('div');
-    row.style.marginBottom = '8px';
-    row.innerHTML = `
-      <label><b>${{f.name}}</b> (${{f.group}})</label><br/>
-      <small>${{f.description || ''}} | current: ${{s.is_set ? 'set' : 'unset'}} ${{s.masked || ''}}</small><br/>
-      <input type="${{f.secret ? 'password' : 'text'}}" name="${{f.name}}" style="min-width:420px;" autocomplete="off" />
-    `;
-    form.appendChild(row);
+  try {{
+    await refreshCsrf();
+    var schemaResp = await fetch('/api/settings/schema');
+    var statusResp = await fetch('/api/settings/status');
+    if (!schemaResp.ok || !statusResp.ok) {{
+      throw new Error('HTTP schema=' + schemaResp.status + ' status=' + statusResp.status);
+    }}
+    var schemaJson = await schemaResp.json();
+    var statusJson = await statusResp.json();
+    schema = schemaJson.fields || schema;
+    statusRows = statusJson.fields || statusRows;
+    if (statusJson.env_path) setEnvPathLine(statusJson.env_path);
+    renderSettingsForm();
+    showResult('(ready)', 'Loaded ' + schema.length + ' fields.');
+  }} catch (e) {{
+    renderSettingsForm();
+    showResult('API refresh failed, using server snapshot: ' + e, 'Offline snapshot');
   }}
-  document.getElementById('status').textContent = 'Loaded settings schema/status';
+}}
+
+async function postSettings(path, body, retryCsrf) {{
+  await refreshCsrf();
+  var resp = await fetch(path, {{
+    method: 'POST',
+    headers: {{'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken}},
+    body: JSON.stringify(body)
+  }});
+  var text = await resp.text();
+  var data = {{}};
+  try {{ data = JSON.parse(text); }} catch (pe) {{ data = {{raw: text}}; }}
+  if (!resp.ok && retryCsrf && data.error === 'csrf failed') {{
+    await refreshCsrf();
+    return postSettings(path, body, false);
+  }}
+  return {{resp: resp, data: data}};
 }}
 
 async function saveSettings() {{
-  const inputs = document.querySelectorAll('#settingsForm input');
-  const updates = {{}};
-  for (const i of inputs) {{
-    if ((i.value || '').trim()) updates[i.name] = i.value.trim();
+  showResult('Working...', 'Save → restart n8n → verify tokens...');
+  var updates = collectFormUpdates();
+  var keys = Object.keys(updates);
+  if (!keys.length) {{
+    showResult(
+      JSON.stringify({{
+        ok: false,
+        error: 'no input filled',
+        hint: 'Paste NEW token in password/text INPUT below field name (small line is status only). Empty input does not overwrite .env.'
+      }}, null, 2),
+      'Nothing to save — fill at least one input'
+    );
+    return;
   }}
-  const resp = await fetch('/api/settings/update', {{
-    method: 'POST',
-    headers: {{'Content-Type':'application/json','X-CSRF-Token':csrf}},
-    body: JSON.stringify({{updates}})
-  }});
-  const data = await resp.json();
-  document.getElementById('result').textContent = JSON.stringify(data, null, 2);
-  await loadSettings();
+  try {{
+    var out = await postSettings('/api/settings/update', {{updates: updates}}, true);
+    if (!out.resp.ok) {{
+      var hint = out.data.error === 'csrf failed' ? ' Hard-refresh /settings (Ctrl+Shift+R) after dashboard restart.' : '';
+      showResult(JSON.stringify({{ok: false, http: out.resp.status, data: out.data, hint: hint}}, null, 2), 'Save failed');
+      return;
+    }}
+    var data = out.data;
+    if (data.fields) statusRows = data.fields;
+    var inputs = document.querySelectorAll('#settingsForm input[name]');
+    for (var i = 0; i < inputs.length; i++) inputs[i].value = '';
+    await refreshStatusLabelsOnly();
+    var apply = data.apply || {{}};
+    var v = apply.verify_meta || {{}};
+    var n = apply.n8n_restart || {{}};
+    var statusLabel = 'Saved: ' + (data.changed || []).join(', ');
+    if (apply.ok) {{
+      statusLabel += ' | n8n restarted | verify OK';
+    }} else if (n.ok === false) {{
+      statusLabel += ' | n8n restart FAILED';
+    }} else if (v.ok === false) {{
+      statusLabel += ' | verify FAILED (see apply.verify_meta)';
+    }}
+    data.hint = 'Auto: docker compose up -d n8n + verify_meta_tokens.sh';
+    showResult(JSON.stringify(data, null, 2), statusLabel);
+  }} catch (e) {{
+    showResult('Save failed: ' + e, 'Save failed');
+  }}
 }}
 
 async function runTest(group) {{
-  const resp = await fetch('/api/settings/test', {{
-    method: 'POST',
-    headers: {{'Content-Type':'application/json','X-CSRF-Token':csrf}},
-    body: JSON.stringify({{group}})
-  }});
-  const data = await resp.json();
-  document.getElementById('result').textContent = JSON.stringify(data, null, 2);
+  showResult('Testing...', 'Testing ' + group);
+  try {{
+    var overrides = collectFormUpdates();
+    var out = await postSettings('/api/settings/test', {{group: group, overrides: overrides}}, true);
+    var data = out.data;
+    if (!out.resp.ok) {{
+      showResult(JSON.stringify({{ok: false, http: out.resp.status, data: data}}, null, 2), 'Test HTTP failed');
+      return;
+    }}
+    var label = data.ok ? 'Test OK' : 'Test failed (see checks)';
+    if (Object.keys(overrides).length) {{
+      data.note = (data.note || '') + ' [form overrides — Save first to persist]';
+    }}
+    showResult(JSON.stringify(data, null, 2), label);
+  }} catch (e) {{
+    showResult('Test failed: ' + e, 'Test failed');
+  }}
 }}
 
 async function runReadonlyCheck(name) {{
-  const resp = await fetch('/api/check/' + encodeURIComponent(name));
-  const data = await resp.json();
-  document.getElementById('result').textContent = JSON.stringify(data, null, 2);
+  showResult('Checking...', 'Check ' + name);
+  try {{
+    var resp = await fetch('/api/check/' + encodeURIComponent(name));
+    var data = await resp.json();
+    showResult(JSON.stringify(data, null, 2), data.ok ? 'Check OK' : 'Check failed');
+  }} catch (e) {{
+    showResult('Check failed: ' + e, 'Check failed');
+  }}
 }}
 
+document.getElementById('btnSave').addEventListener('click', saveSettings);
+document.getElementById('btnTestAll').addEventListener('click', function() {{ runTest('all'); }});
+document.getElementById('btnTestTelegram').addEventListener('click', function() {{ runTest('telegram'); }});
+document.getElementById('btnTestN8n').addEventListener('click', function() {{ runTest('n8n_api'); }});
+document.getElementById('btnTestMeta').addEventListener('click', function() {{ runTest('meta'); }});
+document.getElementById('btnTestThreads').addEventListener('click', function() {{ runTest('threads'); }});
+document.getElementById('btnCheckCli').addEventListener('click', function() {{ runReadonlyCheck('cli-auth'); }});
+document.getElementById('btnCheckMeta').addEventListener('click', function() {{ runReadonlyCheck('meta'); }});
+renderSettingsForm();
 loadSettings();
 </script>
 </body></html>"""
@@ -669,13 +1113,42 @@ class Handler(BaseHTTPRequestHandler):
 
     def _csrf_ok(self) -> bool:
         token = self.headers.get("X-CSRF-Token", "")
+        if token != CSRF_TOKEN:
+            return False
         origin = self.headers.get("Origin", "")
-        return token == CSRF_TOKEN and _safe_origin(origin)
+        if _safe_origin(origin):
+            return True
+        referer = self.headers.get("Referer", "")
+        if referer.startswith("http://127.0.0.1:") or referer.startswith("http://localhost:"):
+            return True
+        # Localhost-only server: allow POST when Origin omitted (some browsers / extensions).
+        return self._localhost_only()
 
-    def _json(self, payload: dict, code: int = 200) -> None:
+    def _json(
+        self,
+        payload: dict,
+        code: int = 200,
+        *,
+        no_store: bool = False,
+        set_write_session: str | None = None,
+        clear_write_session: bool = False,
+    ) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        if no_store:
+            self.send_header("Cache-Control", "no-store")
+        if set_write_session:
+            self.send_header(
+                "Set-Cookie",
+                f"{WRITE_SESSION_COOKIE}={set_write_session}; Path=/; HttpOnly; "
+                f"SameSite=Strict; Max-Age={WRITE_SESSION_TTL_S}",
+            )
+        if clear_write_session:
+            self.send_header(
+                "Set-Cookie",
+                f"{WRITE_SESSION_COOKIE}=; Path=/; HttpOnly; Max-Age=0; SameSite=Strict",
+            )
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -705,12 +1178,19 @@ class Handler(BaseHTTPRequestHandler):
                 return
             rc, out = run_safe(cmd, timeout_s=20)
             next_steps = []
-            if action == "meta" and rc != 0:
-                next_steps = [
-                    "Refresh Meta/Threads token",
-                    "Update .env token values",
-                    "Restart n8n: sudo docker compose up -d n8n",
-                ]
+            if action == "meta":
+                next_steps = []
+                if rc != 0:
+                    next_steps = [
+                        "Refresh Meta/Threads token in Graph API Explorer",
+                        "Save via http://127.0.0.1:8790/settings (not :8788)",
+                        "Restart n8n: sudo docker compose up -d n8n",
+                    ]
+                if "all meta checks skipped" in out or "no token checks ran" in out:
+                    next_steps = [
+                        "Open http://127.0.0.1:8790/settings and save tokens",
+                        "Confirm .env shows port 8790 dashboard path",
+                    ]
             self._json(
                 {
                     "ok": rc == 0,
@@ -720,14 +1200,36 @@ class Handler(BaseHTTPRequestHandler):
                 }
             )
             return
+        if path == "/api/instance":
+            self._json(
+                {
+                    "ok": True,
+                    "port": PORT,
+                    "root": str(ROOT.resolve()),
+                    "env_path": str(ENV_PATH.resolve()),
+                    "instance_rev": INSTANCE_REV,
+                },
+                no_store=True,
+            )
+            return
+        if path == "/api/csrf":
+            self._json({"ok": True, "csrf": CSRF_TOKEN}, no_store=True)
+            return
         if path == "/api/settings/schema":
-            self._json({"ok": True, "fields": schema_payload()})
+            self._json({"ok": True, "fields": schema_payload()}, no_store=True)
             return
         if path == "/api/settings/status":
-            self._json({"ok": True, "fields": status_payload(_load_env_values())})
+            self._json(
+                {
+                    "ok": True,
+                    "fields": status_payload(_load_env_values()),
+                    "env_path": str(ENV_PATH.resolve()),
+                },
+                no_store=True,
+            )
             return
         if path == "/api/skills/schema":
-            self._json({"ok": True, **_skills_schema()})
+            self._json({"ok": True, **_skills_schema_payload(self)})
             return
         if path == "/api/skills/files":
             skill = (query.get("skill") or [""])[0]
@@ -761,6 +1263,7 @@ class Handler(BaseHTTPRequestHandler):
             raw = _settings_html().encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(raw)))
             self.end_headers()
             self.wfile.write(raw)
@@ -799,18 +1302,74 @@ class Handler(BaseHTTPRequestHandler):
                 return
             try:
                 changed = update_env(ENV_PATH, updates)
+            except OSError as e:
+                self._json({"ok": False, "error": f"cannot write .env: {e}"}, code=500)
+                return
             except ValueError as e:
                 self._json({"ok": False, "error": str(e)}, code=400)
                 return
-            self._json({"ok": True, "changed": changed})
+            if not changed:
+                self._json({"ok": False, "error": "no valid fields in updates"}, code=400)
+                return
+            values = _load_env_values()
+            apply = _apply_after_settings_save()
+            self._json(
+                {
+                    "ok": True,
+                    "changed": changed,
+                    "env_path": str(ENV_PATH.resolve()),
+                    "fields": status_payload(values),
+                    "apply": apply,
+                },
+                no_store=True,
+            )
             return
         if self.path == "/api/settings/test":
             group = str(payload.get("group", "all"))
-            self._json(run_group(group, _load_env_values()))
+            overrides = payload.get("overrides") or {}
+            if not isinstance(overrides, dict):
+                self._json({"ok": False, "error": "overrides must be object"}, code=400)
+                return
+            clean_overrides = {
+                str(k): str(v)
+                for k, v in overrides.items()
+                if isinstance(k, str) and isinstance(v, str) and v.strip()
+            }
+            self._json(run_group(group, _load_env_values(), clean_overrides or None))
+            return
+        if self.path == "/api/skills/unlock":
+            client_ip = self.client_address[0]
+            if not _unlock_rate_ok(client_ip):
+                self._json({"ok": False, "error": "too many attempts, retry later"}, code=429)
+                return
+            expected = _configured_write_pin()
+            if not expected:
+                self._json(
+                    {
+                        "ok": False,
+                        "error": "pin not configured",
+                        "hint": "Set Skill write PIN in Settings first",
+                    },
+                    code=400,
+                )
+                return
+            pin = str(payload.get("pin", ""))
+            if len(pin) < WRITE_PIN_MIN_LEN or not secrets.compare_digest(pin, expected):
+                _record_unlock_fail(client_ip)
+                self._json({"ok": False, "error": "invalid pin"}, code=403)
+                return
+            sid = _create_write_session()
+            self._json({"ok": True, "write_enabled": True}, set_write_session=sid)
+            return
+        if self.path == "/api/skills/lock":
+            sid = _parse_cookies(self.headers.get("Cookie", "")).get(WRITE_SESSION_COOKIE, "")
+            if sid:
+                _revoke_write_session(sid)
+            self._json({"ok": True, "write_enabled": False}, clear_write_session=True)
             return
         if self.path == "/api/skills/file":
-            if not _write_enabled():
-                self._json({"ok": False, "error": "write disabled"}, code=403)
+            if not _write_enabled_for(self):
+                self._json({"ok": False, "error": "write disabled; unlock with PIN first"}, code=403)
                 return
             skill = str(payload.get("skill", ""))
             filename = str(payload.get("file", ""))
@@ -875,8 +1434,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": False, "error": str(e)}, code=500)
                 return
         if self.path == "/api/skills/mapping":
-            if not _write_enabled():
-                self._json({"ok": False, "error": "write disabled"}, code=403)
+            if not _write_enabled_for(self):
+                self._json({"ok": False, "error": "write disabled; unlock with PIN first"}, code=403)
                 return
             mapping = payload.get("mapping")
             if not isinstance(mapping, dict):

@@ -59,7 +59,14 @@ else
 fi
 
 if [[ -f "$HOST_CREDS" ]] && [[ "$auth_ok" != "true" ]]; then
-  add_check "virtiofs_inject" false "./scripts/inject_n8n_secrets.sh (host has .credentials.json, container does not)"
+  echo "WARN: host has Claude OAuth but n8n container does not — running ensure_n8n_oauth.sh" >&2
+  if bash "${ROOT}/scripts/ensure_n8n_oauth.sh" >/dev/null 2>&1 \
+    && docker_exec bash -lc 'test -r /data/secrets/claude/.credentials.json'; then
+    auth_ok=true
+    add_check "virtiofs_inject" true "auto-injected via ensure_n8n_oauth.sh"
+  else
+    add_check "virtiofs_inject" false "./scripts/ensure_n8n_oauth.sh (host has .credentials.json, container does not)"
+  fi
 fi
 
 if docker_exec bash -lc 'test -n "${ANTHROPIC_API_KEY:-}" || test -n "${CLAUDE_CODE_OAUTH_TOKEN:-}"'; then

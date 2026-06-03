@@ -36,16 +36,30 @@ run_state_require_stage "$RUN_DIR" "$RUN_ID" 7 || json_err "run stage not ready 
 
 write_skipped() {
   local reason="${1:-not in publish_targets}"
-  python3 - "$RUN_DIR" "$reason" <<'PY'
+  local err="${2:-}"
+  python3 - "$RUN_DIR" "$reason" "$err" <<'PY'
 import json, sys
 from pathlib import Path
-run_dir, reason = Path(sys.argv[1]), sys.argv[2]
-payload = {"ok": True, "skipped": True, "reason": reason, "post_ids": [], "chunk_count": 0}
+run_dir, reason, err = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+payload = {"ok": True, "skipped": True, "reason": reason, "error": err or None, "post_ids": [], "chunk_count": 0}
 Path(run_dir, "publish_threads.json").write_text(
     json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8"
 )
 print(json.dumps(payload, ensure_ascii=False))
 PY
+}
+
+is_token_expired_msg() {
+  local msg="$1"
+  [[ -n "$msg" ]] || return 1
+  echo "$msg" | grep -qiE 'session has expired|error validating access token|"code"[[:space:]]*:[[:space:]]*190|oauthexception'
+}
+
+skip_token_expired() {
+  local msg="$1"
+  echo "WARN: Threads token expired — skipping publish" >&2
+  write_skipped "token_expired" "$msg"
+  exit 0
 }
 
 if [[ -f "${RUN_DIR}/publish_threads.json" ]]; then
@@ -102,6 +116,9 @@ PY
 
 fail_threads() {
   local msg="$1"
+  if is_token_expired_msg "$msg"; then
+    skip_token_expired "$msg"
+  fi
   echo "$msg" >&2
   POST_IDS=()
   write_result false "$msg" >&2
@@ -111,6 +128,11 @@ fail_threads() {
 API_BASE="https://graph.threads.net/v1.0"
 TOKEN="$THREADS_ACCESS_TOKEN"
 USER="$THREADS_USER_ID"
+
+PRECHECK="$(curl -sS -G "${API_BASE}/${USER}" --data-urlencode "fields=id,username" --data-urlencode "access_token=${TOKEN}" 2>&1)" || true
+if ! echo "$PRECHECK" | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if not d.get('error') else 1)" 2>/dev/null; then
+  is_token_expired_msg "$PRECHECK" && skip_token_expired "$PRECHECK"
+fi
 
 graph_get() {
   curl -fsS -G "$1" --data-urlencode "access_token=$TOKEN" "${@:2}"
@@ -127,6 +149,9 @@ graph_form() {
   local resp
   resp="$(curl "${args[@]}")" || { echo "curl failed: $url" >&2; return 1; }
   if ! echo "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if not d.get('error') else 1)" 2>/dev/null; then
+    if is_token_expired_msg "$resp"; then
+      skip_token_expired "$resp"
+    fi
     echo "Threads API error: $resp" >&2
     return 1
   fi

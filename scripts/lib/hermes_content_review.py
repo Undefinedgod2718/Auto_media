@@ -27,7 +27,18 @@ def _threads_posts(part1: str) -> list[str]:
         part1,
         flags=re.I,
     )
-    return [p.strip() for p in posts if p.strip()]
+    if posts:
+        return [p.strip() for p in posts if p.strip()]
+    chunks = re.findall(
+        r"(##\s*第\s*\d+\s*則[^\n]*\n[\s\S]*?)(?=\n##\s*第\s*\d+\s*則|$)",
+        part1,
+        flags=re.I,
+    )
+    if chunks:
+        return [c.strip() for c in chunks if c.strip()]
+    # Single-block Threads copy (no numbered sections).
+    body = part1.strip()
+    return [body] if body else []
 
 
 def _ig_caption(text: str) -> str:
@@ -173,8 +184,15 @@ def main(run_dir: Path) -> int:
     plan = build_plan(run_dir)
     out = run_dir / "hermes_plan.json"
     _write_plan_file(out, json.dumps(plan, ensure_ascii=False, indent=2) + "\n")
-    print(json.dumps({"ok": True, "path": str(out), "verdict": plan["verdict_hint"]}, ensure_ascii=False))
-    return 0 if plan["verdict_hint"] != "fail" else 1
+    verdict = plan["verdict_hint"]
+    print(
+        json.dumps(
+            {"ok": True, "path": str(out), "verdict": verdict, "verdict_hint": verdict},
+            ensure_ascii=False,
+        )
+    )
+    # Advisory review: always exit 0 so n8n continues; consumers read verdict_hint.
+    return 0
 
 
 if __name__ == "__main__":

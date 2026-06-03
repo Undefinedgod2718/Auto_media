@@ -75,6 +75,10 @@ cmd_doctor() {
       fi
     fi
   done
+  if [[ -x "${REPO_ROOT}/scripts/ensure_n8n_oauth.sh" ]]; then
+    echo "--- scripts/ensure_n8n_oauth.sh ---"
+    bash "${REPO_ROOT}/scripts/ensure_n8n_oauth.sh" || failures=$((failures + 1))
+  fi
   if [[ -x "${REPO_ROOT}/scripts/verify_n8n_claude_engine.sh" ]]; then
     echo "--- scripts/verify_n8n_claude_engine.sh ---"
     bash "${REPO_ROOT}/scripts/verify_n8n_claude_engine.sh" || failures=$((failures + 1))
