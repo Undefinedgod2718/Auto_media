@@ -10,8 +10,6 @@ on:
 permissions:
   contents: write
   packages: write
-  # Required for docker/build-push-action cache-from/cache-to type=gha
-  actions: write
 
 env:
   REGISTRY: ghcr.io
@@ -25,6 +23,7 @@ jobs:
           - service: n8n
             dockerfile: docker/n8n/Dockerfile
             image: ghcr.io/undefinedgod2718/auto-media-n8n
+            build_args: INSTALL_CODEX=true
           - service: gateway
             dockerfile: docker/gateway/Dockerfile
             image: ghcr.io/undefinedgod2718/auto-media-gateway
@@ -47,16 +46,27 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: docker/build-push-action@v6
+      - name: Build and push (n8n)
+        if: matrix.service == 'n8n'
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: ${{ matrix.dockerfile }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          build-args: ${{ matrix.service == 'n8n' && 'INSTALL_CODEX=true' || '' }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          build-args: INSTALL_CODEX=true
+          provenance: false
+
+      - name: Build and push (gateway)
+        if: matrix.service == 'gateway'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
           provenance: false
 
   github-release:
