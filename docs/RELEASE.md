@@ -77,7 +77,8 @@ docker compose up -d n8n gateway
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| Actions **buildx** + `build-cache-backends` | `type=gha` cache misconfigured on repo | Workflow uses no GHA cache; use tag `v0.1.2+` after fix |
+| Actions **platform.runtime.json not found** | File gitignored; Dockerfile COPY in CI | Workflow runs `python3 -m auto_media_tools.apply` before build |
+| Actions **buildx** + `build-cache-backends` | `type=gha` cache misconfigured on repo | Workflow uses no GHA cache |
 | `docker pull` **denied** | Workflow failed or GHCR package still **private** | Actions green → set package **Public** under GitHub Packages |
 | No GitHub Release | `github-release` skipped after build failure | Fix build, re-trigger tag or **workflow_dispatch** |
 

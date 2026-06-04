@@ -23,12 +23,19 @@ jobs:
           - service: n8n
             dockerfile: docker/n8n/Dockerfile
             image: ghcr.io/undefinedgod2718/auto-media-n8n
-            build_args: INSTALL_CODEX=true
           - service: gateway
             dockerfile: docker/gateway/Dockerfile
             image: ghcr.io/undefinedgod2718/auto-media-gateway
     steps:
       - uses: actions/checkout@v4
+
+      # platform.runtime.json is gitignored; n8n Dockerfile COPY needs it at build time.
+      - name: Generate platform.runtime.json
+        env:
+          AUTO_MEDIA_ALLOW_MISSING_CLI: "1"
+        run: |
+          python3 -m pip install --quiet pyyaml
+          python3 -m auto_media_tools.apply
 
       - name: Docker meta
         id: meta
