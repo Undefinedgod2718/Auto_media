@@ -17,7 +17,7 @@ Skill 目錄：`config/skills/codex_svg_artist/`（內含你提供的 **VISUAL_B
 
 ```bash
 RUN_ID="ig-$(date +%Y%m%d-%H%M%S)"
-./scripts/write_task.sh --run-id "$RUN_ID" \
+python3 scripts/lib/task_md.py --run-id "$RUN_ID" \
   --topic "孩子寫功課五分鐘就開始晃" \
   --audience "幼兒園大班焦慮家長" \
   --action generate_carousel_images \
@@ -45,7 +45,7 @@ AUTO_MEDIA_MOCK=0 ./scripts/lib/invoke-engine.sh --run-id "$RUN_ID" --engine cop
 ### 只產單頁（例如封面）
 
 ```bash
-./scripts/write_task.sh --run-id "$RUN_ID" \
+python3 scripts/lib/task_md.py --run-id "$RUN_ID" \
   --topic "孩子不是故意不聽話" \
   --action single_page \
   --page-type A \
@@ -59,7 +59,7 @@ AUTO_MEDIA_MOCK=0 ./scripts/lib/invoke-engine.sh --run-id "$RUN_ID" --engine cop
 ./scripts/amctl.sh skill use svg duoke_carousel_svg
 ./scripts/amctl.sh apply
 
-# … write_task + invoke copywriter + invoke svg_artist + render_png.sh
+# … task_md.py + invoke copywriter + invoke svg_artist + render_png.sh
 ```
 
 ## Skill 檔案說明（圖像生成）

@@ -34,6 +34,14 @@ const mapFile = dir + '/' + runId + '-' + stage + '.json';
 fs.writeFileSync(mapFile, JSON.stringify({ run_id: runId, stage, resume_url: resumeUrl, execution_id: executionId, created_at: new Date().toISOString() }) + '\n');
 return { json: { ...$input.item.json, run_id: runId, resume_url: resumeUrl, execution_id: executionId } };"""
 
+VERIFY_RUN_SECRET_JS = r"""const expected = $env.N8N_RUN_WEBHOOK_SECRET || '';
+if (expected) {
+  const h = $json.headers || {};
+  const got = h['x-n8n-run-secret'] || h['X-N8N-Run-Secret'] || '';
+  if (got !== expected) throw new Error('invalid or missing X-N8N-Run-Secret');
+}
+return $input.all();"""
+
 TELEGRAM_PREVIEW_NODES = ("Telegram HITL preview", "Telegram HITL preview (stage2)")
 
 CLASSIFY_RESUME_JS = r"""const cb = $json.body?.callback ?? $json.query?.callback ?? $json.callback;
@@ -146,19 +154,6 @@ CHECK_LIMITS_PRE_PUBLISH_CMD = (
 HERMES_CONTENT_REVIEW_CMD = (
     f"=/bin/bash /data/scripts/hermes_content_review.sh --run-id \"{RUN_ID_EXPR}\""
 )
-
-WRITE_TASK_CMD = (
-    "=mkdir -p /data/runs/{{ $('Set run context').item.json.run_id }} && "
-    "/bin/bash /data/scripts/write_task.sh "
-    '--run-id "{{ $(\'Set run context\').item.json.run_id }}" '
-    '--topic "{{ $(\'Set run context\').item.json.topic }}" '
-    '--audience "{{ $(\'Set run context\').item.json.audience }}" '
-    "--action generate_copy "
-    "--carousel-total {{ $('Set run context').item.json.carousel_total || 0 }} "
-    '--publish-targets "{{ $(\'Set run context\').item.json.publish_targets || $(\'Webhook Run\').item.json.body?.publish_targets || \'threads\' }}" '
-    '--publish-mode-threads "{{ $(\'Set run context\').item.json.publish_mode_threads || \'carousel\' }}"'
-)
-
 
 def make_should_carousel_if_node(name: str, position: list[int]) -> dict:
     return {
@@ -306,6 +301,19 @@ def patch_happy(data: dict) -> None:
     nodes = {n["name"]: n for n in data["nodes"]}
     conn = data.setdefault("connections", {})
 
+    # Webhook secret gate: reject runs missing X-N8N-Run-Secret before any work.
+    if not any(n.get("name") == "Verify run secret" for n in data["nodes"]):
+        data["nodes"].append({
+            "parameters": {"jsCode": VERIFY_RUN_SECRET_JS},
+            "id": "verify-run-secret",
+            "name": "Verify run secret",
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2,
+            "position": [-20, 0],
+        })
+    conn["Webhook Run"] = {"main": [[{"node": "Verify run secret", "type": "main", "index": 0}]]}
+    conn["Verify run secret"] = {"main": [[{"node": "Load platform.runtime.json", "type": "main", "index": 0}]]}
+
     # Webhook body (upstream is Load platform.runtime.json — not $json.body)
     wh = "$('Webhook Run').item.json.body"
     if "Set run context" in nodes:
@@ -313,8 +321,13 @@ def patch_happy(data: dict) -> None:
             if a["name"] == "topic":
                 a["value"] = f"={{{{ {wh}?.topic || 'AI 發展趨勢' }}}}"
             if a["name"] == "run_id":
+                # run_id gate: only accept a directory-safe token from the body,
+                # else fall back to execution id. Stops shell/path injection at
+                # the source (run_id is interpolated into many commands).
                 a["value"] = (
-                    f"={{{{ {wh}?.run_id || $now.format('yyyyMMdd-HHmmss') + '-' + $execution.id }}}}"
+                    f"={{{{ /^[A-Za-z0-9_-]+$/.test({wh}?.run_id || '') "
+                    f"? {wh}.run_id "
+                    f": $now.format('yyyyMMdd-HHmmss') + '-' + $execution.id }}}}"
                 )
             if a["name"] == "audience":
                 a["value"] = f"={{{{ {wh}?.audience || '25-35 歲科技愛好者' }}}}"
@@ -502,7 +515,8 @@ def patch_happy(data: dict) -> None:
     for audit in ("Audit human decision v1", "Audit human decision v2"):
         conn[audit] = {"main": [[{"node": "Read post.md (publish)", "type": "main", "index": 0}]]}
     # Pre-HITL: copywriter → sync carousel N → generate carousel images
-    ensure_execute_node(data, "Write TASK.md", WRITE_TASK_CMD, [660, 0])
+    # TASK.md is written by the Gateway (scripts/lib/task_md.py), not n8n —
+    # topic never reaches a shell command. No "Write TASK.md" Execute Command.
     ensure_execute_node(data, "Sync carousel total", SYNC_CAROUSEL_CMD, [1000, 0])
     ensure_execute_node(data, "Sync carousel total (revision)", SYNC_CAROUSEL_CMD, [5080, 320])
 
@@ -537,7 +551,8 @@ def patch_happy(data: dict) -> None:
         ensure_execute_node(data, "Invoke carousel images (revision)", CAROUSEL_CMD, [5300, 400])
 
     nodes = {n["name"]: n for n in data["nodes"]}
-    conn["Write TASK.md"] = {"main": [[{"node": "Invoke copywriter", "type": "main", "index": 0}]]}
+    # Set run context flows straight into the copywriter (Gateway already wrote TASK.md).
+    conn["Set run context"] = {"main": [[{"node": "Invoke copywriter", "type": "main", "index": 0}]]}
     ensure_execute_node(data, "Validate post.md", VALIDATE_POST_CMD, [880, 0])
     conn["Invoke copywriter"] = {"main": [[{"node": "Validate post.md", "type": "main", "index": 0}]]}
     ensure_execute_node(data, "Check platform limits (pre-HITL)", CHECK_LIMITS_PRE_HITL_CMD, [990, 0])

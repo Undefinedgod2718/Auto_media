@@ -272,15 +272,11 @@ cat /data/config/platform.runtime.json
 
 ## 節點 4：Write TASK.md
 
-- 節點類型：**Execute Command**
-- 名稱：`Write TASK.md`
-- Command（整段貼上，保留 `{{ }}` 表達式）：
+> **已移除。** TASK.md 不再由 n8n Execute Command 寫入（topic 進 shell = 注入風險）。
+> 改由 Gateway 寫檔：Telegram 路徑 `task_md.write_task_md(...)`；Schedule/測試路徑
+> `POST /internal/write-task`（`scripts/lib/task_md.py`，純 argv，不經 shell）。
 
-```bash
-mkdir -p /data/runs/{{ $json.run_id }} && /bin/bash /data/scripts/write_task.sh --run-id "{{ $json.run_id }}" --topic "{{ $json.topic }}" --audience "{{ $json.audience }}" --action generate_copy
-```
-
-連線：**Set run context** → **Write TASK.md**
+連線：**Set run context** → **Invoke copywriter**（不再有 `Write TASK.md` 節點）
 
 ---
 

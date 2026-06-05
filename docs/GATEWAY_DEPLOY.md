@@ -13,11 +13,12 @@
 ```
 Telegram 文字（純文字、非 / 開頭、非回覆）
   → Gateway POST /telegram（驗 X-Telegram-Bot-Api-Secret-Token）
-  → topic_start job:
-      write_task.sh --run-id <id> --topic <整段文字>     # 寫 /data/runs/<id>/TASK.md
-      POST {N8N_API_URL}/webhook/auto-media-run {run_id, topic, chat_id}
-  → happy-path: Webhook Run → Load runtime → Set run context（讀 body.topic）
-      → Write TASK → invoke copy/svg → Render → Save → Schedule Gateway prereview → Wait
+  → 平台選擇 → 確認後 Gateway 直接寫 TASK：
+      task_md.write_task_md(run_id, topic=<整段文字>, …)   # /data/runs/<id>/TASK.md（不經 shell）
+      POST {N8N_API_URL}/webhook/auto-media-run {run_id, chat_id, publish_targets}
+        # 不含 topic（已落磁碟）；帶 X-N8N-Run-Secret header
+  → happy-path: Webhook Run → Load runtime → Set run context（run_id 強制 regex）
+      → invoke copy/svg → Render → Save → Schedule Gateway prereview → Wait
   → Gateway worker poll GET /executions/{id} 至 status=waiting → sendPhoto（三按鈕）
   → 使用者按 Approve/Revise/Reject → Gateway → resume Wait
 ```

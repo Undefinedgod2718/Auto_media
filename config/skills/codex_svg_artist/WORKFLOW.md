@@ -8,7 +8,7 @@
 ## 自動化（本 repo）
 
 ```bash
-./scripts/write_task.sh --run-id "$RUN_ID" --topic "…" --audience "…" \
+python3 scripts/lib/task_md.py --run-id "$RUN_ID" --topic "…" --audience "…" \
   --action generate_carousel_images --carousel-total 8
 ./scripts/generate_carousel_images.sh --run-id "$RUN_ID"
 ```

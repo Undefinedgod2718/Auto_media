@@ -78,7 +78,7 @@ export AUTO_MEDIA_MOCK=1 DATA_ROOT=./data
 mkdir -p data/config
 ./scripts/amctl.sh apply
 RUN_ID=test-001
-./scripts/write_task.sh --run-id "$RUN_ID" --topic "Smoke test"
+python3 scripts/lib/task_md.py --run-id "$RUN_ID" --topic "Smoke test"
 ./scripts/generate_copy.sh --run-id "$RUN_ID"
 ./scripts/generate_image.sh --run-id "$RUN_ID"
 ./scripts/render_png.sh --run-id "$RUN_ID"
