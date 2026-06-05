@@ -192,7 +192,7 @@
     },
     {
       "parameters": {
-        "command": "=/bin/bash /data/scripts/read_hitl_reply_map.sh --message-id \"{{ String($json.reply_to_message_id || '') }}\""
+        "command": "=/bin/bash /data/scripts/read_hitl_reply_map.sh --message-id-b64 \"{{ Buffer.from(String($json.reply_to_message_id || '')).toString('base64') }}\""
       },
       "id": "read-reply-map",
       "name": "Read HITL reply map",
@@ -252,7 +252,7 @@
     },
     {
       "parameters": {
-        "command": "=/bin/bash /data/scripts/read_hitl_resume_map.sh --run-id \"{{ $('Parse Telegram update').item.json.run_id }}\" --stage \"{{ $('Parse Telegram update').item.json.stage }}\""
+        "command": "=/bin/bash /data/scripts/read_hitl_resume_map.sh --run-id-b64 \"{{ Buffer.from(String($('Parse Telegram update').item.json.run_id || '')).toString('base64') }}\" --stage-b64 \"{{ Buffer.from(String($('Parse Telegram update').item.json.stage || 'v1')).toString('base64') }}\""
       },
       "id": "read-resume-aefa05997726",
       "name": "Read wait resume map",
@@ -279,7 +279,7 @@
     },
     {
       "parameters": {
-        "command": "=/bin/bash /data/scripts/read_hitl_resume_map.sh --run-id \"{{ $('Merge feedback payload').item.json.run_id }}\" --stage feedback-v1"
+        "command": "=/bin/bash /data/scripts/read_hitl_resume_map.sh --run-id-b64 \"{{ Buffer.from(String($('Merge feedback payload').item.json.run_id || '')).toString('base64') }}\" --stage feedback-v1"
       },
       "id": "read-fb-resume-443972616910",
       "name": "Read feedback resume map",
