@@ -13,13 +13,17 @@ services:
     env_file:
       - .env
     ports:
-      - "${N8N_PORT:-5678}:5678"
+      # Bind to loopback: reach n8n editor/webhook via tunnel (WEBHOOK_URL) or a
+      # reverse proxy, not by exposing 5678 on all host interfaces.
+      - "127.0.0.1:${N8N_PORT:-5678}:5678"
     environment:
       GENERIC_TIMEZONE: ${GENERIC_TIMEZONE:-Asia/Taipei}
       TZ: ${TZ:-Asia/Taipei}
       N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true"
       N8N_RUNNERS_ENABLED: "true"
       # Quote value: compose treats $env inside N8N_BLOCK_ENV_* as variable interpolation.
+      # NOTE: must stay "false" — Code/HTTP nodes read $env for Meta/Threads/Telegram
+      # tokens and the run-secret check. Setting "true" breaks publishing.
       N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
       # Execute Command / Read-Write Files are security-sensitive; n8n disables them by default.
       NODES_EXCLUDE: "[]"
@@ -27,8 +31,11 @@ services:
       FILESYSTEM_ALLOWED_PATHS: /data
       # Read/Write Files from Disk sandbox (n8n v2+). Workflow reads /data/runs/*.
       N8N_RESTRICT_FILE_ACCESS_TO: /data
-      NODE_FUNCTION_ALLOW_BUILTIN: "*"
-      NODE_FUNCTION_ALLOW_EXTERNAL: "*"
+      # Lock down Code-node require(): workflows only use the 'fs' builtin and no
+      # external npm. Restricting these blocks require('child_process')/arbitrary
+      # modules — a shell-injection/RCE amplifier if a workflow is ever tampered.
+      NODE_FUNCTION_ALLOW_BUILTIN: "fs"
+      NODE_FUNCTION_ALLOW_EXTERNAL: ""
       N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
       WEBHOOK_URL: ${WEBHOOK_URL:-}
       LANG: C.UTF-8
@@ -86,7 +93,9 @@ services:
     entrypoint: ["/entrypoint.sh"]
     command: ["python3", "/app/scripts/hermes_telegram_gateway.py"]
     ports:
-      - "${GATEWAY_PORT:-8787}:8787"
+      # Loopback only: gateway is reached by n8n over the compose network
+      # (http://gateway:8787); inbound Telegram should arrive via tunnel/proxy.
+      - "127.0.0.1:${GATEWAY_PORT:-8787}:8787"
     env_file:
       - .env
     environment:
