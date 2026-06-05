@@ -26,6 +26,7 @@ DATA_ROOT = Path(os.environ.get("DATA_ROOT", REPO_ROOT / "data"))
 _LIB_PATH = str(REPO_ROOT / "scripts" / "lib")
 if _LIB_PATH not in sys.path:
     sys.path.insert(0, _LIB_PATH)
+import sanitize_input  # noqa: E402  (path set above)
 import task_md  # noqa: E402  (path set above)
 GATEWAY_DB = Path(os.environ.get("GATEWAY_DB", DATA_ROOT / "hitl" / "gateway.db"))
 GATEWAY_LOG = Path(os.environ.get("GATEWAY_LOG", DATA_ROOT / "logs" / "gateway.jsonl"))
@@ -1000,7 +1001,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
                         import uuid
 
                         run_id = time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8]
-                        JOB_QUEUE.put({"job_type": "topic_start", "run_id": run_id, "topic": text, "chat_id": chat_id})
+                        topic = sanitize_input.sanitize_topic(text)
+                        JOB_QUEUE.put({"job_type": "topic_start", "run_id": run_id, "topic": topic, "chat_id": chat_id})
             self._json_response(200, {"ok": True})
             return
 
@@ -1046,11 +1048,14 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 # n8n run. Replaces the deleted "Write TASK.md" Execute Command.
                 import uuid
 
-                run_id = str(payload.get("run_id") or "").strip()
-                if not run_id:
-                    run_id = time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8]
-                topic = str(payload.get("topic") or "").strip()
-                publish_targets = str(payload.get("publish_targets") or "").strip()
+                gen_run_id = time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8]
+                run_id = sanitize_input.sanitize_run_id(
+                    str(payload.get("run_id") or ""), fallback=gen_run_id
+                )
+                topic = sanitize_input.sanitize_topic(str(payload.get("topic") or ""))
+                publish_targets = sanitize_input.sanitize_publish_targets(
+                    str(payload.get("publish_targets") or "")
+                )
                 try:
                     task_md.write_task_md(
                         run_id,

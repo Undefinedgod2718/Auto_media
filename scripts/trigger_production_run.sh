@@ -13,9 +13,16 @@ BASE="${WEBHOOK_URL:-${N8N_API_URL}}"
 BASE="${BASE%/}"
 
 echo "POST ${BASE}/webhook/${WEBHOOK_PATH}"
+# The workflow's "Verify run secret" node rejects runs without this header
+# when N8N_RUN_WEBHOOK_SECRET is set.
+SECRET_HEADER=()
+if [[ -n "${N8N_RUN_WEBHOOK_SECRET:-}" ]]; then
+  SECRET_HEADER=(-H "X-N8N-Run-Secret: ${N8N_RUN_WEBHOOK_SECRET}")
+fi
 resp="$(curl -sS -w '\nHTTP_CODE:%{http_code}' -X POST \
   "${BASE}/webhook/${WEBHOOK_PATH}" \
   -H "Content-Type: application/json" \
+  "${SECRET_HEADER[@]}" \
   -d '{}')"
 code="${resp##*HTTP_CODE:}"
 body="${resp%HTTP_CODE:*}"
