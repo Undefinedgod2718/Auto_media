@@ -7,6 +7,14 @@ source "${ROOT}/scripts/lib/load_env.sh"
 load_repo_env "$ROOT"
 source "${ROOT}/scripts/lib/meta_token_util.sh"
 
+# argv-safe Graph GET: the token reaches curl through a --config fd (process
+# substitution), never as a command argument, so it never appears in `ps aux`.
+# printf is a bash builtin (no separate process), so the token is not in any argv.
+graph_get() {  # graph_get URL TOKEN  (URL must NOT contain access_token)
+  local url="$1" tok="$2"
+  curl -sS --max-time 20 -G --config <(printf 'url = "%s"\ndata-urlencode = "access_token=%s"\n' "$url" "$tok")
+}
+
 STRICT="${VERIFY_META_STRICT:-1}"
 errors=0
 ran=0
@@ -27,7 +35,8 @@ check_token() {
     return 1
   fi
   local body ec
-  body="$(curl -sS --max-time 20 "$url" 2>&1)" || ec=$?
+  # url here is token-free; graph_get appends the token argv-safe.
+  body="$(graph_get "$url" "$token" 2>&1)" || ec=$?
   ec="${ec:-0}"
   if [[ "$ec" -ne 0 ]]; then
     echo "FAIL: ${label}: curl failed (${ec}): ${body}" >&2
@@ -72,7 +81,7 @@ else:
 if [[ -n "${THREADS_ACCESS_TOKEN:-}" && -n "${THREADS_USER_ID:-}" ]]; then
   ran=$((ran + 1))
   check_token "THREADS_ACCESS_TOKEN" "$THREADS_ACCESS_TOKEN" \
-    "https://graph.threads.net/v1.0/${THREADS_USER_ID}?fields=id,username&access_token=${THREADS_ACCESS_TOKEN}" \
+    "https://graph.threads.net/v1.0/${THREADS_USER_ID}?fields=id,username" \
     || errors=$((errors + 1))
 else
   echo "skip THREADS (THREADS_USER_ID or THREADS_ACCESS_TOKEN unset)" >&2
@@ -90,9 +99,8 @@ check_page_publish_scopes() {
   fi
   local ver="${META_GRAPH_API_VERSION:-v21.0}"
   local body
-  body="$(curl -sS --max-time 20 -G "https://graph.facebook.com/${ver}/debug_token" \
-    --data-urlencode "input_token=${token}" \
-    --data-urlencode "access_token=${app_id}|${app_secret}" 2>&1)" || true
+  # argv-safe: token + app secret reach curl via a --config fd, not arguments.
+  body="$(curl -sS --max-time 20 -G --config <(printf 'url = "https://graph.facebook.com/%s/debug_token"\ndata-urlencode = "input_token=%s"\ndata-urlencode = "access_token=%s"\n' "$ver" "$token" "${app_id}|${app_secret}") 2>&1)" || true
   local missing
   missing="$(python3 -c '
 import json, sys
@@ -120,18 +128,34 @@ for g in data.get("granular_scopes") or []:
     if isinstance(g, dict):
         scopes.add(g.get("scope", ""))
 scopes.discard("")
+exp = data.get("expires_at")
+if exp == 0:
+    expmsg = "never (System User / non-expiring)"
+elif isinstance(exp, (int, float)) and exp > 0:
+    import time
+    days = int((exp - time.time()) / 86400)
+    expmsg = f"{days}d left"
+else:
+    expmsg = "unknown"
 missing = sorted(need - scopes)
 if missing:
     print("MISSING")
     print(",".join(missing))
 else:
     print("OK")
+    print("")
+print(expmsg)
 ' <<<"$body")"
-  local st msg
+  local st msg exp
   st="$(printf '%s\n' "$missing" | sed -n '1p')"
   msg="$(printf '%s\n' "$missing" | sed -n '2p')"
+  exp="$(printf '%s\n' "$missing" | sed -n '3p')"
   case "$st" in
-    OK) echo "ok META_PAGE publish scopes (pages_manage_posts, pages_read_engagement)" ;;
+    OK)
+      echo "ok META_PAGE publish scopes (pages_manage_posts, pages_read_engagement)"
+      echo "   token expiry: ${exp}"
+      [[ "$exp" == never* ]] || echo "   HINT: use a Meta System User token (non-expiring) to avoid the ~60d cliff" >&2
+      ;;
     MISSING)
       echo "FAIL: META_PAGE_ACCESS_TOKEN missing scopes: ${msg}" >&2
       echo "  → Re-generate Page token in Graph API Explorer with required permissions" >&2
@@ -149,7 +173,7 @@ if [[ -n "${META_PAGE_ACCESS_TOKEN:-}" && -n "${META_PAGE_ID:-}" ]] && is_page_a
   ran=$((ran + 1))
   ver="${META_GRAPH_API_VERSION:-v21.0}"
   check_token "META_PAGE_ACCESS_TOKEN" "$META_PAGE_ACCESS_TOKEN" \
-    "https://graph.facebook.com/${ver}/${META_PAGE_ID}?fields=id,name&access_token=${META_PAGE_ACCESS_TOKEN}" \
+    "https://graph.facebook.com/${ver}/${META_PAGE_ID}?fields=id,name" \
     || errors=$((errors + 1))
   check_page_publish_scopes "${META_PAGE_ACCESS_TOKEN}" || errors=$((errors + 1))
 elif [[ -n "${META_PAGE_ACCESS_TOKEN:-}" || -n "${META_PAGE_ID:-}" ]]; then
@@ -162,10 +186,10 @@ if [[ -n "${IG_USER_ID:-}" && -n "${META_PAGE_ACCESS_TOKEN:-}" ]] && is_page_acc
   ran=$((ran + 1))
   ver="${META_GRAPH_API_VERSION:-v21.0}"
   check_token "IG_USER_ID" "$META_PAGE_ACCESS_TOKEN" \
-    "https://graph.facebook.com/${ver}/${IG_USER_ID}?fields=id,username&access_token=${META_PAGE_ACCESS_TOKEN}" \
+    "https://graph.facebook.com/${ver}/${IG_USER_ID}?fields=id,username" \
     || errors=$((errors + 1))
   if [[ -n "${META_PAGE_ID:-}" ]]; then
-    linked="$(curl -fsS --max-time 20 "https://graph.facebook.com/${ver}/${META_PAGE_ID}?fields=instagram_business_account&access_token=${META_PAGE_ACCESS_TOKEN}" 2>/dev/null \
+    linked="$(graph_get "https://graph.facebook.com/${ver}/${META_PAGE_ID}?fields=instagram_business_account" "${META_PAGE_ACCESS_TOKEN}" 2>/dev/null \
       | python3 -c "import sys,json; d=json.load(sys.stdin); print((d.get('instagram_business_account') or {}).get('id',''))" 2>/dev/null || true)"
     if [[ -n "$linked" && "$linked" != "$IG_USER_ID" ]]; then
       echo "WARN: IG_USER_ID ($IG_USER_ID) != Page linked account ($linked)" >&2

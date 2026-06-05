@@ -118,6 +118,22 @@ bash scripts/telegram_poll_forwarder.sh
 
 ---
 
+## Token 生命週期（Meta / Threads）
+
+Meta long-lived token 約 60 天過期。三平台機制不同：
+
+- **FB / IG（`META_PAGE_ACCESS_TOKEN`）**：用 Meta Business **System User** token（可設**永不過期**）→ 免續期。
+  Business Settings → Users → System Users → Generate token（指派 Page + 勾 `pages_manage_posts`/`pages_read_engagement`/`instagram_content_publish`）。
+  設 `META_APP_ID`+`META_APP_SECRET` 後，`bash scripts/verify_meta_tokens.sh` 會印 token 到期狀態（`never` = System User）。
+- **Threads（`THREADS_ACCESS_TOKEN`）**：無 System User，須週期續期。裝 host cron：
+  ```cron
+  0 4 * * 0 cd /path/to/Auto_media && bash scripts/refresh_threads_token.sh >> data/logs/token_refresh.log 2>&1
+  ```
+  `refresh_threads_token.sh`（host）呼 `th_refresh_token` → **先驗新 token 再寫 .env**（失敗保留舊 token、不重啟）→ `docker compose up -d n8n`。
+  乾跑：`bash scripts/refresh_threads_token.sh --dry-run`。
+
+> 必須跑在 **host**（需 docker + 改 .env）；勿放容器內（要掛 docker socket = 提權，與硬化衝突）。
+
 ## 驗證清單
 
 - [ ] `data/config/platform.runtime.json` 存在
