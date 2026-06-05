@@ -46,6 +46,19 @@
     },
     {
       "parameters": {
+        "jsCode": "const expected = $env.N8N_RUN_WEBHOOK_SECRET || '';\nif (expected) {\n  const h = $json.headers || {};\n  const got = h['x-n8n-run-secret'] || h['X-N8N-Run-Secret'] || '';\n  if (got !== expected) throw new Error('invalid or missing X-N8N-Run-Secret');\n}\nreturn $input.all();"
+      },
+      "id": "verify-run-secret",
+      "name": "Verify run secret",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -20,
+        0
+      ]
+    },
+    {
+      "parameters": {
         "command": "cat /data/config/platform.runtime.json"
       },
       "id": "load-runtime",
@@ -64,7 +77,7 @@
             {
               "id": "run_id",
               "name": "run_id",
-              "value": "={{ $('Webhook Run').item.json.body?.run_id || $now.format('yyyyMMdd-HHmmss') + '-' + $execution.id }}",
+              "value": "={{ /^[A-Za-z0-9_-]+$/.test($('Webhook Run').item.json.body?.run_id || '') ? $('Webhook Run').item.json.body.run_id : $now.format('yyyyMMdd-HHmmss') + '-' + $execution.id }}",
               "type": "string"
             },
             {
@@ -322,7 +335,7 @@
     },
     {
       "parameters": {
-        "command": "=/bin/bash /data/scripts/write_circuit_breaker.sh \"{{ $('Set run context').item.json.run_id }}\" \"{{ $json.statusCode }}\" \"{{ $json.body }}\""
+        "command": "=/bin/bash /data/scripts/write_circuit_breaker.sh --run-id \"{{ $('Set run context').item.json.run_id }}\" --status-b64 \"{{ Buffer.from(String($json.statusCode ?? '')).toString('base64') }}\" --body-b64 \"{{ Buffer.from(String($json.body ?? '')).toString('base64') }}\""
       },
       "id": "circuit-breaker",
       "name": "Write api_dead.json",
@@ -445,7 +458,7 @@
     },
     {
       "parameters": {
-        "command": "=/bin/bash /data/scripts/write_hitl_reply_map.sh --message-id \"{{ $json.result?.message_id || $json.message_id }}\" --run-id \"{{ $('Set run context').item.json.run_id }}\" --stage \"{{ $json.body?.stage || $json.query?.stage || $json.stage || 'v1' }}\" --decision \"{{ $json.body?.callback || $json.query?.callback || $json.callback || 'revise' }}\""
+        "command": "=/bin/bash /data/scripts/write_hitl_reply_map.sh --message-id-b64 \"{{ Buffer.from(String($json.result?.message_id || $json.message_id || '')).toString('base64') }}\" --run-id \"{{ $('Set run context').item.json.run_id }}\" --stage-b64 \"{{ Buffer.from(String($json.body?.stage || $json.query?.stage || $json.stage || 'v1')).toString('base64') }}\" --decision-b64 \"{{ Buffer.from(String($json.body?.callback || $json.query?.callback || $json.callback || 'revise')).toString('base64') }}\""
       },
       "id": "save-hitl-reply-map",
       "name": "Save HITL reply map",
@@ -807,7 +820,7 @@
     },
     {
       "parameters": {
-        "command": "=/bin/bash /data/scripts/append_review_audit.sh --run-id \"{{ $json.run_id }}\" --actor hermes --decision \"{{ $json.verdict_hint }}\" --review-round \"{{ $json.review_round }}\" --risk-level \"{{ $json.risk_level }}\" --reasons-b64 \"{{ Buffer.from(JSON.stringify($json.reasons || []), 'utf8').toString('base64') }}\" --suggestions-b64 \"{{ Buffer.from(JSON.stringify($json.suggestions || []), 'utf8').toString('base64') }}\" --rerun-scope \"{{ $json.rerun_scope_hint }}\""
+        "command": "=/bin/bash /data/scripts/append_review_audit.sh --run-id \"{{ $('Set run context').item.json.run_id }}\" --actor hermes --decision-b64 \"{{ Buffer.from(String($json.verdict_hint ?? '')).toString('base64') }}\" --review-round-b64 \"{{ Buffer.from(String($json.review_round ?? '')).toString('base64') }}\" --risk-level-b64 \"{{ Buffer.from(String($json.risk_level ?? '')).toString('base64') }}\" --reasons-b64 \"{{ Buffer.from(JSON.stringify($json.reasons || []), 'utf8').toString('base64') }}\" --suggestions-b64 \"{{ Buffer.from(JSON.stringify($json.suggestions || []), 'utf8').toString('base64') }}\" --rerun-scope-b64 \"{{ Buffer.from(String($json.rerun_scope_hint ?? '')).toString('base64') }}\""
       },
       "id": "audit-hermes-prereview",
       "name": "Audit hermes prereview",
@@ -912,7 +925,7 @@
     },
     {
       "parameters": {
-        "command": "=/bin/bash /data/scripts/append_review_audit.sh --run-id \"{{ $('Set run context').item.json.run_id }}\" --actor human --decision \"{{ $json.body?.callback || $json.query?.callback || $json.callback }}\" --review-round 1"
+        "command": "=/bin/bash /data/scripts/append_review_audit.sh --run-id \"{{ $('Set run context').item.json.run_id }}\" --actor human --decision-b64 \"{{ Buffer.from(String($json.body?.callback || $json.query?.callback || $json.callback || '')).toString('base64') }}\" --review-round 1"
       },
       "id": "audit-human-decision-v1",
       "name": "Audit human decision v1",
@@ -952,7 +965,7 @@
     },
     {
       "parameters": {
-        "command": "=/bin/bash /data/scripts/hermes_revision_plan.sh --run-id \"{{ $('Set run context').item.json.run_id }}\" --decision \"{{ $('Set feedback text').item.json.human_decision }}\" --feedback-file \"/data/hitl/feedback/{{ $('Set run context').item.json.run_id }}.txt\" --review-round 1"
+        "command": "=/bin/bash /data/scripts/hermes_revision_plan.sh --run-id \"{{ $('Set run context').item.json.run_id }}\" --decision-b64 \"{{ Buffer.from(String($('Set feedback text').item.json.human_decision ?? '')).toString('base64') }}\" --feedback-file \"/data/hitl/feedback/{{ $('Set run context').item.json.run_id }}.txt\" --review-round 1"
       },
       "id": "hermes-revision-plan",
       "name": "Hermes revision plan",
@@ -979,7 +992,7 @@
     },
     {
       "parameters": {
-        "command": "=/bin/bash /data/scripts/append_review_audit.sh --run-id \"{{ $json.run_id }}\" --actor hermes --decision revise --review-round \"{{ $json.review_round || 1 }}\" --rerun-scope \"{{ $json.rerun_scope || 'copy_only' }}\" --suggestions-b64 \"{{ Buffer.from(JSON.stringify($json.revision_plan || []), 'utf8').toString('base64') }}\""
+        "command": "=/bin/bash /data/scripts/append_review_audit.sh --run-id \"{{ $('Set run context').item.json.run_id }}\" --actor hermes --decision revise --review-round-b64 \"{{ Buffer.from(String($json.review_round || 1)).toString('base64') }}\" --rerun-scope-b64 \"{{ Buffer.from(String($json.rerun_scope || 'copy_only')).toString('base64') }}\" --suggestions-b64 \"{{ Buffer.from(JSON.stringify($json.revision_plan || []), 'utf8').toString('base64') }}\""
       },
       "id": "audit-hermes-revision",
       "name": "Audit hermes revision",
@@ -1119,7 +1132,7 @@
     },
     {
       "parameters": {
-        "command": "=/bin/bash /data/scripts/append_review_audit.sh --run-id \"{{ $('Set run context').item.json.run_id }}\" --actor human --decision \"{{ $json.body?.callback || $json.query?.callback || $json.callback }}\" --review-round 2"
+        "command": "=/bin/bash /data/scripts/append_review_audit.sh --run-id \"{{ $('Set run context').item.json.run_id }}\" --actor human --decision-b64 \"{{ Buffer.from(String($json.body?.callback || $json.query?.callback || $json.callback || '')).toString('base64') }}\" --review-round 2"
       },
       "id": "audit-human-decision-v2",
       "name": "Audit human decision v2",
@@ -1741,6 +1754,17 @@
       ]
     },
     "Webhook Run": {
+      "main": [
+        [
+          {
+            "node": "Verify run secret",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify run secret": {
       "main": [
         [
           {

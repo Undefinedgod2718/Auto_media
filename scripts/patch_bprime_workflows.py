@@ -34,6 +34,14 @@ const mapFile = dir + '/' + runId + '-' + stage + '.json';
 fs.writeFileSync(mapFile, JSON.stringify({ run_id: runId, stage, resume_url: resumeUrl, execution_id: executionId, created_at: new Date().toISOString() }) + '\n');
 return { json: { ...$input.item.json, run_id: runId, resume_url: resumeUrl, execution_id: executionId } };"""
 
+VERIFY_RUN_SECRET_JS = r"""const expected = $env.N8N_RUN_WEBHOOK_SECRET || '';
+if (expected) {
+  const h = $json.headers || {};
+  const got = h['x-n8n-run-secret'] || h['X-N8N-Run-Secret'] || '';
+  if (got !== expected) throw new Error('invalid or missing X-N8N-Run-Secret');
+}
+return $input.all();"""
+
 TELEGRAM_PREVIEW_NODES = ("Telegram HITL preview", "Telegram HITL preview (stage2)")
 
 CLASSIFY_RESUME_JS = r"""const cb = $json.body?.callback ?? $json.query?.callback ?? $json.callback;
@@ -293,6 +301,19 @@ def patch_happy(data: dict) -> None:
     nodes = {n["name"]: n for n in data["nodes"]}
     conn = data.setdefault("connections", {})
 
+    # Webhook secret gate: reject runs missing X-N8N-Run-Secret before any work.
+    if not any(n.get("name") == "Verify run secret" for n in data["nodes"]):
+        data["nodes"].append({
+            "parameters": {"jsCode": VERIFY_RUN_SECRET_JS},
+            "id": "verify-run-secret",
+            "name": "Verify run secret",
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2,
+            "position": [-20, 0],
+        })
+    conn["Webhook Run"] = {"main": [[{"node": "Verify run secret", "type": "main", "index": 0}]]}
+    conn["Verify run secret"] = {"main": [[{"node": "Load platform.runtime.json", "type": "main", "index": 0}]]}
+
     # Webhook body (upstream is Load platform.runtime.json — not $json.body)
     wh = "$('Webhook Run').item.json.body"
     if "Set run context" in nodes:
@@ -300,8 +321,13 @@ def patch_happy(data: dict) -> None:
             if a["name"] == "topic":
                 a["value"] = f"={{{{ {wh}?.topic || 'AI 發展趨勢' }}}}"
             if a["name"] == "run_id":
+                # run_id gate: only accept a directory-safe token from the body,
+                # else fall back to execution id. Stops shell/path injection at
+                # the source (run_id is interpolated into many commands).
                 a["value"] = (
-                    f"={{{{ {wh}?.run_id || $now.format('yyyyMMdd-HHmmss') + '-' + $execution.id }}}}"
+                    f"={{{{ /^[A-Za-z0-9_-]+$/.test({wh}?.run_id || '') "
+                    f"? {wh}.run_id "
+                    f": $now.format('yyyyMMdd-HHmmss') + '-' + $execution.id }}}}"
                 )
             if a["name"] == "audience":
                 a["value"] = f"={{{{ {wh}?.audience || '25-35 歲科技愛好者' }}}}"

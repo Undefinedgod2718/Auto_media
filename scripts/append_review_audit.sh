@@ -13,29 +13,36 @@ RERUN_SCOPE=""
 HIGH_RISK_APPROVED="false"
 STOP_REASON=""
 
+# Decode base64 scalar args. Workflow commands pass user/AI-controlled values
+# base64-wrapped so no shell metacharacter ever reaches the command string.
+b64dec() {
+  python3 -c "import base64,sys; sys.stdout.write(base64.b64decode(sys.argv[1]).decode('utf-8'))" "$1" 2>/dev/null || true
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --run-id) RUN_ID="$2"; shift 2 ;;
     --actor) ACTOR="$2"; shift 2 ;;
     --decision) DECISION="$2"; shift 2 ;;
+    --decision-b64) DECISION="$(b64dec "$2")"; shift 2 ;;
     --review-round) REVIEW_ROUND="$2"; shift 2 ;;
+    --review-round-b64) REVIEW_ROUND="$(b64dec "$2")"; shift 2 ;;
     --risk-level) RISK_LEVEL="$2"; shift 2 ;;
+    --risk-level-b64) RISK_LEVEL="$(b64dec "$2")"; shift 2 ;;
     --reasons-json) REASONS="$2"; shift 2 ;;
     --suggestions-json) SUGGESTIONS="$2"; shift 2 ;;
-    --reasons-b64)
-      REASONS="$(python3 -c "import base64,sys; print(base64.b64decode(sys.argv[1]).decode('utf-8'))" "$2" 2>/dev/null || echo "[]")"
-      shift 2
-      ;;
-    --suggestions-b64)
-      SUGGESTIONS="$(python3 -c "import base64,sys; print(base64.b64decode(sys.argv[1]).decode('utf-8'))" "$2" 2>/dev/null || echo "[]")"
-      shift 2
-      ;;
+    --reasons-b64) REASONS="$(b64dec "$2")"; [[ -n "$REASONS" ]] || REASONS="[]"; shift 2 ;;
+    --suggestions-b64) SUGGESTIONS="$(b64dec "$2")"; [[ -n "$SUGGESTIONS" ]] || SUGGESTIONS="[]"; shift 2 ;;
     --rerun-scope) RERUN_SCOPE="$2"; shift 2 ;;
+    --rerun-scope-b64) RERUN_SCOPE="$(b64dec "$2")"; shift 2 ;;
     --high-risk-approved) HIGH_RISK_APPROVED="$2"; shift 2 ;;
     --stop-reason) STOP_REASON="$2"; shift 2 ;;
     *) json_err "unknown arg: $1" ;;
   esac
 done
+
+# REVIEW_ROUND must stay numeric (decoded value is consumed as int downstream).
+[[ "$REVIEW_ROUND" =~ ^[0-9]+$ ]] || REVIEW_ROUND="0"
 
 [[ -n "$RUN_ID" && -n "$ACTOR" ]] || json_err "usage: append_review_audit.sh --run-id ID --actor hermes|human|system [options]"
 RUN_DIR="$(ensure_run_dir "$RUN_ID")"

@@ -6,15 +6,20 @@ RUN_ID=""
 DECISION=""
 FEEDBACK_FILE=""
 REVIEW_ROUND="1"
+b64dec() {
+  python3 -c "import base64,sys; sys.stdout.write(base64.b64decode(sys.argv[1]).decode('utf-8'))" "$1" 2>/dev/null || true
+}
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --run-id) RUN_ID="$2"; shift 2 ;;
     --decision) DECISION="$2"; shift 2 ;;
+    --decision-b64) DECISION="$(b64dec "$2")"; shift 2 ;;
     --feedback-file) FEEDBACK_FILE="$2"; shift 2 ;;
     --review-round) REVIEW_ROUND="$2"; shift 2 ;;
     *) json_err "unknown arg: $1" ;;
   esac
 done
+[[ "$REVIEW_ROUND" =~ ^[0-9]+$ ]] || REVIEW_ROUND="1"
 
 [[ -n "$RUN_ID" && -n "$DECISION" ]] || json_err "usage: hermes_revision_plan.sh --run-id ID --decision revise|reject [--feedback-file PATH] [--review-round N]"
 RUN_DIR="$(ensure_run_dir "$RUN_ID")"
