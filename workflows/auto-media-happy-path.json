@@ -112,19 +112,6 @@
     },
     {
       "parameters": {
-        "command": "=mkdir -p /data/runs/{{ $('Set run context').item.json.run_id }} && /bin/bash /data/scripts/write_task.sh --run-id \"{{ $('Set run context').item.json.run_id }}\" --topic \"{{ $('Set run context').item.json.topic }}\" --audience \"{{ $('Set run context').item.json.audience }}\" --action generate_copy --carousel-total {{ $('Set run context').item.json.carousel_total || 0 }} --publish-targets \"{{ $('Set run context').item.json.publish_targets || $('Webhook Run').item.json.body?.publish_targets || 'threads' }}\" --publish-mode-threads \"{{ $('Set run context').item.json.publish_mode_threads || 'carousel' }}\""
-      },
-      "id": "write-task",
-      "name": "Write TASK.md",
-      "type": "n8n-nodes-base.executeCommand",
-      "typeVersion": 1,
-      "position": [
-        660,
-        0
-      ]
-    },
-    {
-      "parameters": {
         "command": "=/bin/bash /data/scripts/generate_copy.sh --run-id \"{{ $('Set run context').item.json.run_id }}\""
       },
       "id": "invoke-copy",
@@ -1776,17 +1763,6 @@
       ]
     },
     "Set run context": {
-      "main": [
-        [
-          {
-            "node": "Write TASK.md",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Write TASK.md": {
       "main": [
         [
           {

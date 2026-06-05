@@ -147,19 +147,6 @@ HERMES_CONTENT_REVIEW_CMD = (
     f"=/bin/bash /data/scripts/hermes_content_review.sh --run-id \"{RUN_ID_EXPR}\""
 )
 
-WRITE_TASK_CMD = (
-    "=mkdir -p /data/runs/{{ $('Set run context').item.json.run_id }} && "
-    "/bin/bash /data/scripts/write_task.sh "
-    '--run-id "{{ $(\'Set run context\').item.json.run_id }}" '
-    '--topic "{{ $(\'Set run context\').item.json.topic }}" '
-    '--audience "{{ $(\'Set run context\').item.json.audience }}" '
-    "--action generate_copy "
-    "--carousel-total {{ $('Set run context').item.json.carousel_total || 0 }} "
-    '--publish-targets "{{ $(\'Set run context\').item.json.publish_targets || $(\'Webhook Run\').item.json.body?.publish_targets || \'threads\' }}" '
-    '--publish-mode-threads "{{ $(\'Set run context\').item.json.publish_mode_threads || \'carousel\' }}"'
-)
-
-
 def make_should_carousel_if_node(name: str, position: list[int]) -> dict:
     return {
         "parameters": {
@@ -502,7 +489,8 @@ def patch_happy(data: dict) -> None:
     for audit in ("Audit human decision v1", "Audit human decision v2"):
         conn[audit] = {"main": [[{"node": "Read post.md (publish)", "type": "main", "index": 0}]]}
     # Pre-HITL: copywriter → sync carousel N → generate carousel images
-    ensure_execute_node(data, "Write TASK.md", WRITE_TASK_CMD, [660, 0])
+    # TASK.md is written by the Gateway (scripts/lib/task_md.py), not n8n —
+    # topic never reaches a shell command. No "Write TASK.md" Execute Command.
     ensure_execute_node(data, "Sync carousel total", SYNC_CAROUSEL_CMD, [1000, 0])
     ensure_execute_node(data, "Sync carousel total (revision)", SYNC_CAROUSEL_CMD, [5080, 320])
 
@@ -537,7 +525,8 @@ def patch_happy(data: dict) -> None:
         ensure_execute_node(data, "Invoke carousel images (revision)", CAROUSEL_CMD, [5300, 400])
 
     nodes = {n["name"]: n for n in data["nodes"]}
-    conn["Write TASK.md"] = {"main": [[{"node": "Invoke copywriter", "type": "main", "index": 0}]]}
+    # Set run context flows straight into the copywriter (Gateway already wrote TASK.md).
+    conn["Set run context"] = {"main": [[{"node": "Invoke copywriter", "type": "main", "index": 0}]]}
     ensure_execute_node(data, "Validate post.md", VALIDATE_POST_CMD, [880, 0])
     conn["Invoke copywriter"] = {"main": [[{"node": "Validate post.md", "type": "main", "index": 0}]]}
     ensure_execute_node(data, "Check platform limits (pre-HITL)", CHECK_LIMITS_PRE_HITL_CMD, [990, 0])

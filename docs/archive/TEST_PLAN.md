@@ -27,7 +27,7 @@
 
 - 前提：`AUTO_MEDIA_MOCK=1`
 - 流程：
-  1. 建立 run：`write_task.sh`
+  1. 建立 run：`task_md.py`
   2. 生成文案：`generate_copy.sh`
   3. 生成 SVG：`generate_svg.sh`
   4. 渲染 PNG：`render_png.sh`

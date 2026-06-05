@@ -8,6 +8,7 @@ import os
 import re
 import sqlite3
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -20,6 +21,12 @@ from typing import Any
 
 REPO_ROOT = Path(os.environ.get("AUTO_MEDIA_ROOT", Path(__file__).resolve().parents[1]))
 DATA_ROOT = Path(os.environ.get("DATA_ROOT", REPO_ROOT / "data"))
+
+# scripts/lib holds shared modules (task_md, run_state, …); make them importable.
+_LIB_PATH = str(REPO_ROOT / "scripts" / "lib")
+if _LIB_PATH not in sys.path:
+    sys.path.insert(0, _LIB_PATH)
+import task_md  # noqa: E402  (path set above)
 GATEWAY_DB = Path(os.environ.get("GATEWAY_DB", DATA_ROOT / "hitl" / "gateway.db"))
 GATEWAY_LOG = Path(os.environ.get("GATEWAY_LOG", DATA_ROOT / "logs" / "gateway.jsonl"))
 GATEWAY_SECRET = os.environ.get("GATEWAY_INTERNAL_SECRET", "")
@@ -29,6 +36,7 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 N8N_API_URL = os.environ.get("N8N_API_URL", "http://localhost:5678").rstrip("/")
 N8N_API_KEY = os.environ.get("N8N_API_KEY", "")
 N8N_WEBHOOK_RUN = os.environ.get("N8N_WEBHOOK_RUN", "/webhook/auto-media-run")
+N8N_RUN_WEBHOOK_SECRET = os.environ.get("N8N_RUN_WEBHOOK_SECRET", "")
 GATEWAY_PORT = int(os.environ.get("GATEWAY_PORT", "8787"))
 HITL_WAIT_POLL_SEC = float(os.environ.get("HITL_WAIT_POLL_SEC", "30"))
 POLL_INTERVAL = float(os.environ.get("GATEWAY_POLL_INTERVAL", "0.5"))
@@ -227,19 +235,14 @@ def handle_platform_callback(update: dict) -> bool:
             telegram_api("answerCallbackQuery", {"callback_query_id": cq_id, "text": "請至少選一個平台"})
             return True
         targets = ",".join(sorted(selected))
-        run_script(
-            "write_task.sh",
-            "--run-id",
+        task_md.write_task_md(
             run_id,
-            "--topic",
-            pending["topic"],
-            "--publish-targets",
-            targets,
-            "--publish-mode-threads",
-            "carousel",
+            topic=pending["topic"],
+            publish_targets=targets,
+            publish_mode_threads="carousel",
         )
         _clear_pending(run_id)
-        trigger_n8n_run(run_id, pending["topic"], chat_id, targets)
+        trigger_n8n_run(run_id, chat_id, targets)
         telegram_api(
             "answerCallbackQuery",
             {"callback_query_id": cq_id, "text": f"已選：{targets}"},
@@ -817,16 +820,21 @@ def send_hermes_plan(
     telegram_api("sendMessage", payload)
 
 
-def trigger_n8n_run(run_id: str, topic: str, chat_id: str, publish_targets: str = "") -> None:
+def trigger_n8n_run(run_id: str, chat_id: str, publish_targets: str = "") -> None:
+    # topic never crosses to n8n: TASK.md is already written on disk by
+    # write_task_md(). Passing it here would re-introduce a shell-injection
+    # vector via the workflow's command interpolation.
     body: dict[str, Any] = {
         "run_id": run_id,
-        "topic": topic,
         "chat_id": chat_id,
         "audience": "general",
     }
     if publish_targets:
         body["publish_targets"] = publish_targets
-    http_json("POST", f"{N8N_API_URL}{N8N_WEBHOOK_RUN}", body)
+    headers = {}
+    if N8N_RUN_WEBHOOK_SECRET:
+        headers["X-N8N-Run-Secret"] = N8N_RUN_WEBHOOK_SECRET
+    http_json("POST", f"{N8N_API_URL}{N8N_WEBHOOK_RUN}", body, headers=headers)
 
 
 def worker_loop() -> None:
@@ -1032,6 +1040,38 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     "text": payload.get("text", ""),
                 })
                 self._json_response(200, {"ok": True})
+                return
+            if path == "/internal/write-task":
+                # Schedule / test path: write TASK.md (no shell) and trigger the
+                # n8n run. Replaces the deleted "Write TASK.md" Execute Command.
+                import uuid
+
+                run_id = str(payload.get("run_id") or "").strip()
+                if not run_id:
+                    run_id = time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8]
+                topic = str(payload.get("topic") or "").strip()
+                publish_targets = str(payload.get("publish_targets") or "").strip()
+                try:
+                    task_md.write_task_md(
+                        run_id,
+                        topic=topic,
+                        audience=str(payload.get("audience") or "general"),
+                        action=str(payload.get("action") or "generate_copy"),
+                        carousel_total=str(payload.get("carousel_total") or ""),
+                        page_type=str(payload.get("page_type") or ""),
+                        publish_targets=publish_targets,
+                        publish_mode_threads=str(
+                            payload.get("publish_mode_threads") or "carousel"
+                        ),
+                        generate_carousel=str(payload.get("generate_carousel") or ""),
+                    )
+                except ValueError as e:
+                    self._json_response(400, {"ok": False, "error": str(e)})
+                    return
+                if payload.get("trigger", True):
+                    chat_id = str(payload.get("chat_id") or TELEGRAM_CHAT_ID)
+                    trigger_n8n_run(run_id, chat_id, publish_targets)
+                self._json_response(200, {"ok": True, "run_id": run_id})
                 return
 
         self._json_response(404, {"ok": False, "error": "not found"})
