@@ -17,7 +17,11 @@ load_env() {
 load_env
 
 : "${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN missing in .env}"
-: "${N8N_API_URL:=http://localhost:5678}"
+# Resolve n8n base via the shared helper so Dev Container reaches host Docker
+# (N8N_SYNC_API_URL / host.docker.internal) instead of an unreachable localhost.
+# shellcheck source=scripts/lib/n8n_api_url.sh
+source "$ROOT/scripts/lib/n8n_api_url.sh"
+N8N_API_URL="$(n8n_api_url_resolve)"
 : "${N8N_API_KEY:=}"
 
 echo "=== 1. Telegram Bot API ==="
