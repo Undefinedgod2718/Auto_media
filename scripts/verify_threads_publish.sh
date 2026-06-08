@@ -36,11 +36,13 @@ TEXT="$(echo "$CHUNK_JSON" | python3 -c "import sys,json; c=json.load(sys.stdin)
 LEN="${#TEXT}"
 
 API_BASE="https://graph.threads.net/v1.0"
+# Token via --config fd (printf builtin) so it is never in curl argv / `ps aux`.
+token_cfg() { printf 'data-urlencode = "access_token=%s"\n' "${THREADS_ACCESS_TOKEN}"; }
 CREATE_RESP="$(curl -sS -X POST "${API_BASE}/${THREADS_USER_ID}/threads" \
-  --data-urlencode "access_token=${THREADS_ACCESS_TOKEN}" \
   --data-urlencode "media_type=IMAGE" \
   --data-urlencode "image_url=${IMAGE_URL}" \
-  --data-urlencode "text=${TEXT}")"
+  --data-urlencode "text=${TEXT}" \
+  --config <(token_cfg))"
 
 python3 - "$CREATE_RESP" "$LEN" "$CHUNK_JSON" <<'PY'
 import json, sys

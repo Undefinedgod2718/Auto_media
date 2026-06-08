@@ -131,25 +131,30 @@ API_BASE="https://graph.threads.net/v1.0"
 TOKEN="$THREADS_ACCESS_TOKEN"
 USER="$THREADS_USER_ID"
 
-PRECHECK="$(curl -sS -G "${API_BASE}/${USER}" --data-urlencode "fields=id,username" --data-urlencode "access_token=${TOKEN}" 2>&1)" || true
+# Emit the access_token as a curl config line. Passed via --config <(token_cfg)
+# so the token reaches curl through a fd, never as an argument (not in `ps aux`).
+# printf is a bash builtin → the token is not in any process argv either.
+token_cfg() { printf 'data-urlencode = "access_token=%s"\n' "$TOKEN"; }
+
+PRECHECK="$(curl -sS -G "${API_BASE}/${USER}" --data-urlencode "fields=id,username" --config <(token_cfg) 2>&1)" || true
 if ! echo "$PRECHECK" | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if not d.get('error') else 1)" 2>/dev/null; then
   is_token_expired_msg "$PRECHECK" && skip_token_expired "$PRECHECK"
 fi
 
 graph_get() {
-  curl -fsS -G "$1" --data-urlencode "access_token=$TOKEN" "${@:2}"
+  curl -fsS -G "$1" "${@:2}" --config <(token_cfg)
 }
 
 graph_form() {
   local url="$1"
   shift
-  local -a args=(-sS -X POST "$url" --data-urlencode "access_token=$TOKEN")
+  local -a args=(-sS -X POST "$url")
   while [[ $# -gt 0 ]]; do
     args+=(--data-urlencode "$1")
     shift
   done
   local resp
-  resp="$(curl "${args[@]}")" || { echo "curl failed: $url" >&2; return 1; }
+  resp="$(curl "${args[@]}" --config <(token_cfg))" || { echo "curl failed: $url" >&2; return 1; }
   if ! echo "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if not d.get('error') else 1)" 2>/dev/null; then
     if is_token_expired_msg "$resp"; then
       skip_token_expired "$resp"
