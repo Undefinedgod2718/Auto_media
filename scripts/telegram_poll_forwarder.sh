@@ -31,10 +31,14 @@ if [[ -f "$OFFSET_FILE" ]]; then
   offset="$(tr -d '\r\n' < "$OFFSET_FILE")"
 fi
 
-query="limit=20&timeout=0&allowed_updates[]=callback_query&allowed_updates[]=message"
+# Long-poll: getUpdates blocks up to TELEGRAM_LONGPOLL_TIMEOUT s waiting for an
+# update, so the loop spawns curl/python far less often than short-poll (timeout=0)
+# — lower CPU/memory churn, lower latency. curl --max-time must exceed it.
+LONGPOLL="${TELEGRAM_LONGPOLL_TIMEOUT:-25}"
+query="limit=20&timeout=${LONGPOLL}&allowed_updates[]=callback_query&allowed_updates[]=message"
 [[ -n "$offset" ]] && query="${query}&offset=${offset}"
 
-resp="$(curl -fsS "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates?${query}")"
+resp="$(curl -fsS --max-time "$((LONGPOLL + 10))" "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates?${query}")"
 count="$(echo "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('result',[])))")"
 [[ "$count" == "0" ]] && { echo "No new Telegram updates."; exit 0; }
 
