@@ -100,19 +100,23 @@ fi
 
 VERSION="${META_GRAPH_API_VERSION:-v21.0}"
 
+# Pass the token via a --config fd (printf is a bash builtin) so it never lands
+# in curl's argv / `ps aux`.
+token_cfg() { printf 'data-urlencode = "access_token=%s"\n' "${META_PAGE_ACCESS_TOKEN}"; }
+
 if [[ -n "$IMAGE_URL" ]]; then
   FB_MODE="photo"
   RESP="$(curl -sS -X POST \
     "https://graph.facebook.com/${VERSION}/${META_PAGE_ID}/photos" \
     --data-urlencode "url=${IMAGE_URL}" \
     --data-urlencode "message=${MESSAGE}" \
-    --data-urlencode "access_token=${META_PAGE_ACCESS_TOKEN}" 2>&1)" || true
+    --config <(token_cfg) 2>&1)" || true
 else
   FB_MODE="feed"
   RESP="$(curl -sS -X POST \
     "https://graph.facebook.com/${VERSION}/${META_PAGE_ID}/feed" \
     --data-urlencode "message=${MESSAGE}" \
-    --data-urlencode "access_token=${META_PAGE_ACCESS_TOKEN}" 2>&1)" || true
+    --config <(token_cfg) 2>&1)" || true
 fi
 if [[ -z "$RESP" ]]; then
   write_fb_result false false "graph_api_error" "empty response from Graph API (curl failed?)"
